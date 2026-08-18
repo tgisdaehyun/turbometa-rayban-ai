@@ -87,6 +87,7 @@
 		LT0003000300030003 /* LiveTranslateViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = LT1003000300030003 /* LiveTranslateViewModel.swift */; };
 		LT0004000400040004 /* LiveTranslateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LT1004000400040004 /* LiveTranslateView.swift */; };
 		LT0005000500050005 /* LiveTranslateSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LT1005000500050005 /* LiveTranslateSettingsView.swift */; };
+		LT0006000600060006 /* LiveTranslateHistoryStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = LT1006000600060006 /* LiveTranslateHistoryStorage.swift */; };
 		OC1001000100010001 /* OpenClawModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = OC2001000100010001 /* OpenClawModels.swift */; };
 		OC1002000200020002 /* OpenClawNodeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = OC2002000200020002 /* OpenClawNodeService.swift */; };
 		OC1003000300030003 /* OpenClawCommandRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = OC2003000300030003 /* OpenClawCommandRouter.swift */; };
@@ -201,6 +202,7 @@
 		LT1003000300030003 /* LiveTranslateViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTranslateViewModel.swift; sourceTree = "<group>"; };
 		LT1004000400040004 /* LiveTranslateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTranslateView.swift; sourceTree = "<group>"; };
 		LT1005000500050005 /* LiveTranslateSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTranslateSettingsView.swift; sourceTree = "<group>"; };
+		LT1006000600060006 /* LiveTranslateHistoryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTranslateHistoryStorage.swift; sourceTree = "<group>"; };
 		OC2001000100010001 /* OpenClawModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawModels.swift; sourceTree = "<group>"; };
 		OC2002000200020002 /* OpenClawNodeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawNodeService.swift; sourceTree = "<group>"; };
 		OC2003000300030003 /* OpenClawCommandRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawCommandRouter.swift; sourceTree = "<group>"; };
@@ -286,6 +288,7 @@
 				63EB4C91D8E0C8AC944DF95A /* GeminiLiveService.swift */,
 				C7F490219E64EC144DAF8A8C /* QuickVisionStorage.swift */,
 				LT1002000200020002 /* LiveTranslateService.swift */,
+				LT1006000600060006 /* LiveTranslateHistoryStorage.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -649,6 +652,7 @@
 				LT0003000300030003 /* LiveTranslateViewModel.swift in Sources */,
 				LT0004000400040004 /* LiveTranslateView.swift in Sources */,
 				LT0005000500050005 /* LiveTranslateSettingsView.swift in Sources */,
+				LT0006000600060006 /* LiveTranslateHistoryStorage.swift in Sources */,
 				OC1001000100010001 /* OpenClawModels.swift in Sources */,
 				OC1002000200020002 /* OpenClawNodeService.swift in Sources */,
 				OC1003000300030003 /* OpenClawCommandRouter.swift in Sources */,

@@ -145,12 +145,6 @@ class OmniRealtimeViewModel: ObservableObject {
             }
         }
 
-        omniService.onAudioDone = { [weak self] in
-            Task { @MainActor in
-                // Audio playback complete
-            }
-        }
-
         omniService.onError = { [weak self] error in
             Task { @MainActor in
                 self?.errorMessage = error

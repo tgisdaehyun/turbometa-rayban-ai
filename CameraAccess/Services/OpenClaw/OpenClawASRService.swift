@@ -223,7 +223,7 @@ class OpenClawASRService: NSObject {
 
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .defaultToSpeaker])
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .defaultToSpeaker])
             try audioSession.setActive(true)
 
             audioEngine = AVAudioEngine()

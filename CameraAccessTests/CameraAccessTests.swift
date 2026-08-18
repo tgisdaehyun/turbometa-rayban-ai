@@ -218,3 +218,144 @@ final class LiveAIInputModeTests: XCTestCase {
     XCTAssertTrue(viewModel.showError)
   }
 }
+
+final class LiveTranslateCoordinatorTests: XCTestCase {
+
+  func testStreamingTextUsesTextAndStashWithoutDuplicatingConfirmedPrefix() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .en, targetLanguage: .zh)
+
+    var update = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "", pendingText: "The", isFinal: false)
+    )
+    XCTAssertEqual(update.turns.first?.originalText, "The")
+
+    update = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "The", pendingText: " weather", isFinal: false)
+    )
+    XCTAssertEqual(update.turns.first?.originalText, "The weather")
+
+    update = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: "item-1", confirmedText: "你好", pendingText: "，世界", isFinal: false)
+    )
+    XCTAssertEqual(update.turns.first?.translatedText, "你好，世界")
+  }
+
+  func testSourceAndTranslationArrivingOutOfOrderUpsertOneStableRecord() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .en, targetLanguage: .zh)
+
+    let translationUpdate = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: "assistant-1", confirmedText: "你好", pendingText: "", isFinal: true)
+    )
+    XCTAssertEqual(translationUpdate.recordsToUpsert.count, 1)
+    let firstID = try! XCTUnwrap(translationUpdate.recordsToUpsert.first?.id)
+    XCTAssertEqual(translationUpdate.recordsToUpsert.first?.originalText, "")
+
+    let sourceUpdate = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "Hello", pendingText: "", isFinal: true)
+    )
+    XCTAssertEqual(sourceUpdate.recordsToUpsert.count, 1)
+    XCTAssertEqual(sourceUpdate.recordsToUpsert.first?.id, firstID)
+    XCTAssertEqual(sourceUpdate.recordsToUpsert.first?.originalText, "Hello")
+    XCTAssertEqual(sourceUpdate.recordsToUpsert.first?.translatedText, "你好")
+  }
+
+  func testExplicitItemLinksPairInterleavedResponsesWithTheirSources() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .en, targetLanguage: .zh)
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "One", pendingText: "", isFinal: true)
+    )
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-2", confirmedText: "Two", pendingText: "", isFinal: true)
+    )
+    _ = coordinator.receiveLink(sourceItemID: "source-2", responseItemID: "assistant-2")
+    _ = coordinator.receiveLink(sourceItemID: "source-1", responseItemID: "assistant-1")
+
+    _ = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-2", itemID: "assistant-2", confirmedText: "二", pendingText: "", isFinal: true)
+    )
+    let update = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: "assistant-1", confirmedText: "一", pendingText: "", isFinal: true)
+    )
+
+    XCTAssertEqual(update.recordsToUpsert.map(\.originalText), ["One", "Two"])
+    XCTAssertEqual(update.recordsToUpsert.map(\.translatedText), ["一", "二"])
+  }
+}
+
+final class LiveTranslateAudioQueueTests: XCTestCase {
+
+  func testResponseAudioDoneDoesNotCompleteUntilDataPlayedBack() {
+    var queue = TranslationAudioQueue()
+    queue.append(Data([1, 2]), responseID: "response-a")
+    queue.append(Data([3, 4]), responseID: "response-b")
+    queue.markServerFinished("response-b")
+
+    XCTAssertNil(queue.beginNextIfReady(), "The head response must wait for audio.done")
+
+    queue.markServerFinished("response-a")
+    XCTAssertEqual(queue.beginNextIfReady()?.responseID, "response-a")
+    XCTAssertEqual(queue.pendingCount, 1)
+    XCTAssertFalse(queue.complete("response-b"), "A later response cannot complete early")
+    XCTAssertTrue(queue.complete("response-a"))
+    XCTAssertEqual(queue.beginNextIfReady()?.responseID, "response-b")
+  }
+}
+
+final class LiveTranslateHistoryStorageTests: XCTestCase {
+
+  func testHistoryUpsertIsAtomicAndDeduplicatedByResponse() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("live-translate-history-\(UUID().uuidString).json")
+    let storage = LiveTranslateHistoryStorage(fileURL: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let first = TranslateRecord(
+      sessionID: UUID(),
+      sourceItemID: "source-1",
+      responseID: "response-1",
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "Hello",
+      translatedText: "你好"
+    )
+    XCTAssertEqual(storage.upsert(first).count, 1)
+
+    let updated = TranslateRecord(
+      id: first.id,
+      timestamp: first.timestamp,
+      sessionID: first.sessionID,
+      sourceItemID: first.sourceItemID,
+      responseID: first.responseID,
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "Hello there",
+      translatedText: "你好"
+    )
+    let records = storage.upsert(updated)
+    XCTAssertEqual(records.count, 1)
+    XCTAssertEqual(storage.loadAll().first?.originalText, "Hello there")
+
+    storage.deleteAll()
+    XCTAssertTrue(storage.loadAll().isEmpty)
+  }
+
+  func testLegacyRecordWithoutRealtimeIdentifiersStillDecodes() throws {
+    let json = """
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "timestamp": 0,
+        "sourceLanguage": "en",
+        "targetLanguage": "zh",
+        "originalText": "Hello",
+        "translatedText": "你好"
+      }
+      """.data(using: .utf8)!
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .secondsSince1970
+
+    let record = try decoder.decode(TranslateRecord.self, from: json)
+    XCTAssertNil(record.sessionID)
+    XCTAssertNil(record.sourceItemID)
+    XCTAssertNil(record.responseID)
+  }
+}

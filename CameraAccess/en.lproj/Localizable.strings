@@ -368,6 +368,14 @@
 "livetranslate.source" = "Source";
 "livetranslate.target" = "Target";
 "livetranslate.clear" = "Clear";
+"livetranslate.latest" = "Latest";
+"livetranslate.translating" = "Translating…";
+"livetranslate.finalizing" = "Finishing the last sentence…";
+"livetranslate.playing" = "Playing translation";
+"livetranslate.pending" = "· %d queued";
+"livetranslate.vision.title" = "Vision Enhancement";
+"livetranslate.vision.off" = "Off; no frames are read or uploaded";
+"livetranslate.vision.on" = "Uploads 1 latest glasses frame per speech turn";
 
 // Live Translate Settings
 "livetranslate.settings.title" = "Translation Settings";
@@ -382,9 +390,12 @@
 "livetranslate.settings.imageEnhance.footer" = "Enable visual enhancement to improve translation accuracy for homophones";
 "livetranslate.settings.history" = "Translation History";
 "livetranslate.settings.clearHistory" = "Clear History";
+"livetranslate.settings.clearHistory.confirm.title" = "Clear translation history?";
+"livetranslate.settings.clearHistory.confirm.message" = "All saved bilingual records will be deleted. This cannot be undone.";
 "livetranslate.settings.historyCount" = "%d translation records";
 "common.done" = "Done";
 "common.ok" = "OK";
+"common.cancel" = "Cancel";
 
 // Live Translate Languages
 "livetranslate.lang.en" = "English";

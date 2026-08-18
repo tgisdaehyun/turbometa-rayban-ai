@@ -19,6 +19,10 @@ class LiveTranslateViewModel: ObservableObject {
     @Published var currentOriginal = ""          // 当前原文（暂不支持，保留字段）
     @Published var streamingTranslation = ""     // 流式翻译片段
     @Published var translationHistory: [TranslateRecord] = []
+    @Published var activeTurns: [TranslationTurnSnapshot] = []
+    @Published var playbackState: TranslationPlaybackState = .idle
+    @Published var pendingPlaybackCount = 0
+    @Published var isFinalizing = false
 
     // MARK: - Error State
     @Published var errorMessage: String?
@@ -56,6 +60,9 @@ class LiveTranslateViewModel: ObservableObject {
     @Published var imageEnhanceEnabled: Bool {
         didSet {
             UserDefaults.standard.set(imageEnhanceEnabled, forKey: "translate_image_enhance")
+            if !imageEnhanceEnabled {
+                currentVideoFrame = nil
+            }
         }
     }
 
@@ -72,11 +79,16 @@ class LiveTranslateViewModel: ObservableObject {
 
     // MARK: - Private
     private var translateService: LiveTranslateService?
-    private var imageTimer: Timer?
+    private let historyStorage: LiveTranslateHistoryStorage
+    private var turnCoordinator: TranslationTurnCoordinator
+    private var persistedRecordSignatures: [UUID: String] = [:]
+    private var finalizationTask: Task<Void, Never>?
+    private var shouldMaintainConnection = false
 
     // MARK: - Init
 
-    init() {
+    init(historyStorage: LiveTranslateHistoryStorage = .shared) {
+        self.historyStorage = historyStorage
         // 从 UserDefaults 加载设置
         let savedSource = UserDefaults.standard.string(forKey: "translate_source_language") ?? "en"
         self.sourceLanguage = TranslateLanguage(rawValue: savedSource) ?? .en
@@ -88,13 +100,31 @@ class LiveTranslateViewModel: ObservableObject {
         self.selectedVoice = TranslateVoice(rawValue: savedVoice) ?? .cherry
 
         self.audioOutputEnabled = UserDefaults.standard.object(forKey: "translate_audio_enabled") as? Bool ?? true
-        self.imageEnhanceEnabled = UserDefaults.standard.object(forKey: "translate_image_enhance") as? Bool ?? false
+        let privacyMigrationKey = "translate_image_privacy_default_off_v1"
+        if !UserDefaults.standard.bool(forKey: privacyMigrationKey) {
+            self.imageEnhanceEnabled = false
+            UserDefaults.standard.set(false, forKey: "translate_image_enhance")
+            UserDefaults.standard.set(true, forKey: privacyMigrationKey)
+        } else {
+            self.imageEnhanceEnabled = UserDefaults.standard.object(forKey: "translate_image_enhance") as? Bool ?? false
+        }
         self.usePhoneMic = UserDefaults.standard.object(forKey: "translate_use_phone_mic") as? Bool ?? false
+        // Use the local values here because `self` is not fully initialized
+        // until every stored property has been assigned.
+        self.turnCoordinator = TranslationTurnCoordinator(
+            sourceLanguage: TranslateLanguage(rawValue: savedSource) ?? .en,
+            targetLanguage: TranslateLanguage(rawValue: savedTarget) ?? .zh
+        )
+        self.translationHistory = historyStorage.loadAll()
+        self.persistedRecordSignatures = Dictionary(uniqueKeysWithValues: translationHistory.map {
+            ($0.id, Self.signature(for: $0))
+        })
     }
 
     // MARK: - Connection
 
     func connect() {
+        shouldMaintainConnection = true
         let apiKey = APIProviderManager.staticLiveAIAPIKey
         guard !apiKey.isEmpty else {
             errorMessage = "livetranslate.error.noApiKey".localized
@@ -102,6 +132,11 @@ class LiveTranslateViewModel: ObservableObject {
             return
         }
 
+        turnCoordinator = TranslationTurnCoordinator(
+            sourceLanguage: sourceLanguage,
+            targetLanguage: targetLanguage
+        )
+        activeTurns = []
         translateService = LiveTranslateService(apiKey: apiKey)
         setupCallbacks()
 
@@ -116,16 +151,22 @@ class LiveTranslateViewModel: ObservableObject {
     }
 
     func disconnect() {
-        stopImageTimer()
+        shouldMaintainConnection = false
+        finalizationTask?.cancel()
+        finalizationTask = nil
         translateService?.disconnect()
         translateService = nil
         isConnected = false
         isRecording = false
+        isFinalizing = false
+        playbackState = .idle
+        pendingPlaybackCount = 0
     }
 
     // MARK: - Recording
 
     func toggleRecording() {
+        guard !isFinalizing else { return }
         if isRecording {
             stopRecording()
         } else {
@@ -134,33 +175,27 @@ class LiveTranslateViewModel: ObservableObject {
     }
 
     func startRecording() {
-        translateService?.startRecording(usePhoneMic: usePhoneMic)
-        isRecording = true
-
-        // 如果启用图像增强，开始定时发送图片
-        if imageEnhanceEnabled {
-            startImageTimer()
-        }
+        guard isConnected, !isFinalizing else { return }
+        isRecording = translateService?.startRecording(usePhoneMic: usePhoneMic) ?? false
     }
 
     func stopRecording() {
-        translateService?.stopRecording()
+        guard isRecording, !isFinalizing, let service = translateService else { return }
         isRecording = false
-        stopImageTimer()
+        isFinalizing = true
+        service.stopRecording()
 
-        // 保存当前翻译到历史
-        if !currentTranslation.isEmpty {
-            let record = TranslateRecord(
-                sourceLanguage: sourceLanguage,
-                targetLanguage: targetLanguage,
-                originalText: currentOriginal,
-                translatedText: currentTranslation
-            )
-            translationHistory.insert(record, at: 0)
-
-            // 限制历史记录数量
-            if translationHistory.count > 50 {
-                translationHistory = Array(translationHistory.prefix(50))
+        finalizationTask = Task { @MainActor [weak self, weak service] in
+            guard let self, let service else { return }
+            await service.finishSession()
+            service.disconnect()
+            guard !Task.isCancelled else { return }
+            self.translateService = nil
+            self.isConnected = false
+            self.isFinalizing = false
+            self.finalizationTask = nil
+            if self.shouldMaintainConnection {
+                self.connect()
             }
         }
     }
@@ -200,22 +235,46 @@ class LiveTranslateViewModel: ObservableObject {
             }
         }
 
-        translateService?.onTranslationDelta = { [weak self] delta in
-            DispatchQueue.main.async {
-                self?.streamingTranslation += delta
+        translateService?.onSourceTranscript = { [weak self] event in
+            Task { @MainActor in
+                guard var coordinator = self?.turnCoordinator else { return }
+                let update = coordinator.receiveSource(event)
+                self?.turnCoordinator = coordinator
+                self?.apply(update)
             }
         }
 
-        translateService?.onTranslationText = { [weak self] text in
-            DispatchQueue.main.async {
-                self?.currentTranslation = text
-                self?.streamingTranslation = ""
+        translateService?.onTranslation = { [weak self] event in
+            Task { @MainActor in
+                guard var coordinator = self?.turnCoordinator else { return }
+                let update = coordinator.receiveTranslation(event)
+                self?.turnCoordinator = coordinator
+                self?.apply(update)
             }
         }
 
-        translateService?.onAudioDone = { [weak self] in
-            DispatchQueue.main.async {
-                print("🔊 [TranslateVM] 音频播放完成")
+        translateService?.onTurnLink = { [weak self] sourceItemID, responseItemID in
+            Task { @MainActor in
+                guard var coordinator = self?.turnCoordinator else { return }
+                let update = coordinator.receiveLink(
+                    sourceItemID: sourceItemID,
+                    responseItemID: responseItemID
+                )
+                self?.turnCoordinator = coordinator
+                self?.apply(update)
+            }
+        }
+
+        translateService?.onPlaybackStateChanged = { [weak self] state, pendingCount in
+            Task { @MainActor in
+                self?.playbackState = state
+                self?.pendingPlaybackCount = pendingCount
+            }
+        }
+
+        translateService?.onSpeechStarted = { [weak self] in
+            Task { @MainActor in
+                self?.sendCurrentFrameForSpeechTurn()
             }
         }
 
@@ -228,6 +287,7 @@ class LiveTranslateViewModel: ObservableObject {
     }
 
     private func updateServiceSettings() {
+        turnCoordinator.updateLanguages(source: sourceLanguage, target: targetLanguage)
         translateService?.updateSettings(
             sourceLanguage: sourceLanguage,
             targetLanguage: targetLanguage,
@@ -236,25 +296,38 @@ class LiveTranslateViewModel: ObservableObject {
         )
     }
 
-    // MARK: - Image Timer
+    // MARK: - Turn and Image Handling
 
-    private func startImageTimer() {
-        stopImageTimer()
-        imageTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.sendCurrentFrame()
-            }
+    private func sendCurrentFrameForSpeechTurn() {
+        guard isRecording, imageEnhanceEnabled, let frame = currentVideoFrame else { return }
+        translateService?.sendImageFrame(frame)
+    }
+
+    private func apply(_ update: TranslationCoordinatorUpdate) {
+        // A finalized translation is rendered from persisted history. Later
+        // source-ASR updates upsert that same row instead of showing a duplicate.
+        let persistedIDs = Set(update.recordsToUpsert.map(\.id))
+        activeTurns = update.turns.filter { !persistedIDs.contains($0.id) }
+        if let latest = activeTurns.last {
+            currentOriginal = latest.originalText
+            streamingTranslation = latest.translatedText
+        } else {
+            currentOriginal = ""
+            streamingTranslation = ""
+        }
+
+        for record in update.recordsToUpsert {
+            let signature = Self.signature(for: record)
+            guard persistedRecordSignatures[record.id] != signature else { continue }
+            persistedRecordSignatures[record.id] = signature
+            translationHistory = historyStorage.upsert(record)
+            currentTranslation = record.translatedText
         }
     }
 
-    private func stopImageTimer() {
-        imageTimer?.invalidate()
-        imageTimer = nil
-    }
-
-    private func sendCurrentFrame() {
-        guard imageEnhanceEnabled, let frame = currentVideoFrame else { return }
-        translateService?.sendImageFrame(frame)
+    private static func signature(for record: TranslateRecord) -> String {
+        [record.sourceItemID ?? "", record.responseID ?? "", record.originalText, record.translatedText]
+            .joined(separator: "\u{1F}")
     }
 
     // MARK: - Clear
@@ -266,6 +339,8 @@ class LiveTranslateViewModel: ObservableObject {
     }
 
     func clearHistory() {
+        historyStorage.deleteAll()
         translationHistory.removeAll()
+        persistedRecordSignatures.removeAll()
     }
 }

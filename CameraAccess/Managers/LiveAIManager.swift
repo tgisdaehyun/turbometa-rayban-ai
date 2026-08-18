@@ -152,7 +152,7 @@ class LiveAIManager: ObservableObject {
         }
 
         // 配置音频会话
-        try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+        try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
         try audioSession.setActive(true)
         print("✅ [LiveAIManager] 后台音频会话已配置: category=\(audioSession.category.rawValue), mode=\(audioSession.mode.rawValue)")
     }

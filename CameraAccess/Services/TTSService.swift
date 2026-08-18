@@ -71,7 +71,7 @@ class TTSService: NSObject, ObservableObject {
 
             // 只在需要时配置，避免与现有会话冲突
             // 使用和 OmniRealtimeService 完全一样的设置（不要 defaultToSpeaker）
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP])
+            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
             try audioSession.setPreferredSampleRate(24000)
             try audioSession.setActive(true, options: [.notifyOthersOnDeactivation])
             print("✅ [TTS] Audio session 已配置")

@@ -88,7 +88,7 @@ class GeminiLiveService: NSObject {
     private func configureAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker])
             try audioSession.setActive(true, options: [.notifyOthersOnDeactivation])
         } catch {
             print("⚠️ [Gemini] Audio session 配置失败: \(error)")
@@ -199,10 +199,10 @@ class GeminiLiveService: NSObject {
         do {
             print("🎤 [Gemini] 开始录音")
 
-            let audioSession = AVAudioSession.sharedInstance()
-            switch audioSession.recordPermission {
+            let audioApplication = AVAudioApplication.shared
+            switch audioApplication.recordPermission {
             case .undetermined:
-                audioSession.requestRecordPermission { [weak self] granted in
+                AVAudioApplication.requestRecordPermission { [weak self] granted in
                     DispatchQueue.main.async {
                         if granted {
                             self?.startRecording()

@@ -31,12 +31,10 @@ class LiveTranslateService: NSObject {
     private var playerNode: AVAudioPlayerNode?
     private let playbackFormat = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1)
 
-    // Audio buffer management
-    private var audioBuffer = Data()
-    private var isCollectingAudio = false
-    private var audioChunkCount = 0
-    private let minChunksBeforePlay = 2
-    private var hasStartedPlaying = false
+    // Audio responses are buffered by response_id and played strictly in
+    // arrival order. A server-side audio.done event only seals the response;
+    // the next response starts after AVAudioPlayerNode reports dataPlayedBack.
+    private var audioQueue = TranslationAudioQueue()
     private var isPlaybackEngineRunning = false
 
     // Translation settings
@@ -51,19 +49,26 @@ class LiveTranslateService: NSObject {
 
     // Callbacks
     var onConnected: (() -> Void)?
-    var onTranslationText: ((String) -> Void)?    // 翻译结果文本
-    var onTranslationDelta: ((String) -> Void)?   // 增量翻译文本
-    var onAudioDelta: ((Data) -> Void)?
-    var onAudioDone: (() -> Void)?
+    var onSourceTranscript: ((TranslateSourceTranscriptEvent) -> Void)?
+    var onTranslation: ((TranslateTextEvent) -> Void)?
+    var onTurnLink: ((_ sourceItemID: String, _ responseItemID: String) -> Void)?
+    var onPlaybackStateChanged: ((TranslationPlaybackState, Int) -> Void)?
+    var onPlaybackCompleted: ((String) -> Void)?
+    var onSpeechStarted: (() -> Void)?
+    var onSessionFinished: (() -> Void)?
     var onError: ((String) -> Void)?
 
     // State
     private var isRecording = false
     private var eventIdCounter = 0
+    private var finishContinuation: CheckedContinuation<Void, Never>?
+    private var finishTimeoutWorkItem: DispatchWorkItem?
+    private var hasReceivedSessionFinished = false
 
-    // Image sending
-    private var lastImageSendTime: Date?
-    private let imageInterval: TimeInterval = 0.5  // 每0.5秒最多发送一张图片
+    // Image sending. The view model invokes `sendImageFrame` once per server
+    // VAD speech-start event; this guard makes the one-frame-per-turn contract
+    // robust even if a callback is delivered more than once.
+    private var hasSentImageForSpeechTurn = false
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -96,15 +101,19 @@ class LiveTranslateService: NSObject {
         print("✅ [Translate] 播放引擎初始化完成: Float32 @ 24kHz")
     }
 
-    private func startPlaybackEngine() {
-        guard let playbackEngine = playbackEngine, !isPlaybackEngineRunning else { return }
+    @discardableResult
+    private func startPlaybackEngine() -> Bool {
+        guard let playbackEngine = playbackEngine else { return false }
+        if isPlaybackEngineRunning { return true }
 
         do {
             try playbackEngine.start()
             isPlaybackEngineRunning = true
             print("▶️ [Translate] 播放引擎已启动")
+            return true
         } catch {
             print("❌ [Translate] 播放引擎启动失败: \(error)")
+            return false
         }
     }
 
@@ -150,7 +159,12 @@ class LiveTranslateService: NSObject {
         urlSession?.invalidateAndCancel()
         urlSession = nil
         stopRecording()
+        cancelPlaybackQueue()
         stopPlaybackEngine()
+        finishTimeoutWorkItem?.cancel()
+        finishTimeoutWorkItem = nil
+        finishContinuation?.resume()
+        finishContinuation = nil
     }
 
     // MARK: - Configuration
@@ -184,9 +198,14 @@ class LiveTranslateService: NSObject {
             "session": [
                 "modalities": modalities,
                 "voice": voice.rawValue,
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm24",
+                // LiveTranslate accepts raw PCM. The audio tap below sends
+                // 16-bit little-endian samples at the declared sample rate;
+                // `pcm16`/`pcm24` are not valid LiveTranslate format values.
+                "sample_rate": 16000,
+                "input_audio_format": "pcm",
+                "output_audio_format": "pcm",
                 "input_audio_transcription": [
+                    "model": "qwen3-asr-flash-realtime",
                     "language": sourceLanguage.rawValue
                 ],
                 "translation": [
@@ -196,7 +215,11 @@ class LiveTranslateService: NSObject {
                     "type": "server_vad",
                     "threshold": 0.5,
                     "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500
+                    "silence_duration_ms": 500,
+                    "create_response": true,
+                    // A new speech turn must not cancel generation for the
+                    // previous one; local playback is serialized separately.
+                    "interrupt_response": false
                 ]
             ]
         ]
@@ -205,10 +228,50 @@ class LiveTranslateService: NSObject {
         print("📤 [Translate] 配置会话: \(sourceLanguage.rawValue) → \(targetLanguage.rawValue), 音色: \(voice.rawValue)")
     }
 
+    /// Gracefully seals the realtime session so the server can finish the last
+    /// VAD turn. Completion waits for both session.finished and local audio
+    /// playback, with a bounded timeout for network failures.
+    func finishSession(timeout: TimeInterval = 8) async {
+        stopRecording()
+        guard webSocket != nil else { return }
+
+        hasReceivedSessionFinished = false
+        sendEvent([
+            "event_id": generateEventId(),
+            "type": TranslateClientEvent.sessionFinish.rawValue
+        ])
+
+        await withCheckedContinuation { continuation in
+            finishContinuation = continuation
+            finishTimeoutWorkItem?.cancel()
+            let timeoutWorkItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                // A network timeout should not truncate audio that has already
+                // been received. Stop accepting late chunks before sealing
+                // incomplete responses, then drain the local playback queue.
+                self.webSocket?.cancel(with: .goingAway, reason: nil)
+                self.webSocket = nil
+                self.urlSession?.invalidateAndCancel()
+                self.urlSession = nil
+                self.hasReceivedSessionFinished = true
+                self.audioQueue.markAllServerFinished()
+                self.playNextResponseIfReady()
+                self.completeFinishIfReady()
+            }
+            finishTimeoutWorkItem = timeoutWorkItem
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + timeout,
+                execute: timeoutWorkItem
+            )
+            completeFinishIfReady()
+        }
+    }
+
     // MARK: - Audio Recording
 
-    func startRecording(usePhoneMic: Bool = false) {
-        guard !isRecording else { return }
+    @discardableResult
+    func startRecording(usePhoneMic: Bool = false) -> Bool {
+        guard !isRecording else { return false }
 
         do {
             print("🎤 [Translate] 开始录音, 使用\(usePhoneMic ? "iPhone" : "蓝牙")麦克风")
@@ -233,7 +296,7 @@ class LiveTranslateService: NSObject {
                 try audioSession.setCategory(
                     .playAndRecord,
                     mode: .default,
-                    options: [.allowBluetooth, .defaultToSpeaker]
+                    options: [.allowBluetoothHFP, .defaultToSpeaker]
                 )
                 print("🎙️ [Translate] 使用蓝牙麦克风（翻译自己）")
             }
@@ -246,7 +309,7 @@ class LiveTranslateService: NSObject {
 
             guard let engine = audioEngine else {
                 print("❌ [Translate] 音频引擎未初始化")
-                return
+                return false
             }
 
             let inputNode = engine.inputNode
@@ -264,10 +327,12 @@ class LiveTranslateService: NSObject {
 
             isRecording = true
             print("✅ [Translate] 录音已启动")
+            return true
 
         } catch {
             print("❌ [Translate] 启动录音失败: \(error.localizedDescription)")
             onError?("Failed to start recording: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -278,10 +343,11 @@ class LiveTranslateService: NSObject {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         isRecording = false
+        hasSentImageForSpeechTurn = false
     }
 
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let floatChannelData = buffer.floatChannelData else { return }
+        guard buffer.floatChannelData != nil else { return }
 
         let inputSampleRate = buffer.format.sampleRate
 
@@ -365,20 +431,28 @@ class LiveTranslateService: NSObject {
     // MARK: - Image Sending
 
     func sendImageFrame(_ image: UIImage) {
-        // 限制发送频率：每0.5秒最多一张
-        let now = Date()
-        if let lastTime = lastImageSendTime, now.timeIntervalSince(lastTime) < imageInterval {
+        guard !hasSentImageForSpeechTurn else {
             return
         }
-        lastImageSendTime = now
+        hasSentImageForSpeechTurn = true
+
+        // The caller invokes this once after speech_started. Do not use a
+        // repeating timer or a global 500 ms throttle: each VAD turn should
+        // get its own latest frame, including short consecutive turns.
+        guard webSocket != nil else {
+            hasSentImageForSpeechTurn = false
+            return
+        }
 
         guard let imageData = image.jpegData(compressionQuality: 0.6) else {
+            hasSentImageForSpeechTurn = false
             print("❌ [Translate] 无法压缩图片")
             return
         }
 
         // 限制图片大小 500KB
         guard imageData.count <= 500 * 1024 else {
+            hasSentImageForSpeechTurn = false
             print("⚠️ [Translate] 图片过大，跳过发送")
             return
         }
@@ -438,6 +512,7 @@ class LiveTranslateService: NSObject {
                 self?.receiveMessage()
 
             case .failure(let error):
+                guard self?.webSocket != nil else { return }
                 print("❌ [Translate] 接收消息失败: \(error.localizedDescription)")
                 self?.onError?("Receive error: \(error.localizedDescription)")
             }
@@ -472,48 +547,103 @@ class LiveTranslateService: NSObject {
             guard let self else { return }
 
             switch type {
-            case TranslateServerEvent.sessionCreated.rawValue,
-                 TranslateServerEvent.sessionUpdated.rawValue:
-                print("✅ [Translate] 会话已建立")
+            case TranslateServerEvent.sessionCreated.rawValue:
+                print("✅ [Translate] 会话已创建，等待配置确认")
+
+            case TranslateServerEvent.sessionUpdated.rawValue:
+                print("✅ [Translate] 会话配置已确认")
                 self.onConnected?()
 
+            case TranslateServerEvent.inputAudioBufferSpeechStarted.rawValue:
+                self.hasSentImageForSpeechTurn = false
+                self.onSpeechStarted?()
+
+            case TranslateServerEvent.conversationItemCreated.rawValue:
+                guard let sourceItemID = json["previous_item_id"] as? String,
+                      let item = json["item"] as? [String: Any],
+                      let responseItemID = item["id"] as? String,
+                      item["role"] as? String == "assistant" else { return }
+                self.onTurnLink?(sourceItemID, responseItemID)
+
+            case TranslateServerEvent.sourceTranscriptText.rawValue:
+                guard let itemID = json["item_id"] as? String else { return }
+                self.onSourceTranscript?(TranslateSourceTranscriptEvent(
+                    itemID: itemID,
+                    confirmedText: json["text"] as? String ?? "",
+                    pendingText: json["stash"] as? String ?? "",
+                    isFinal: false
+                ))
+
+            case TranslateServerEvent.sourceTranscriptCompleted.rawValue:
+                guard let itemID = json["item_id"] as? String else { return }
+                self.onSourceTranscript?(TranslateSourceTranscriptEvent(
+                    itemID: itemID,
+                    confirmedText: json["transcript"] as? String ?? "",
+                    pendingText: "",
+                    isFinal: true
+                ))
+
+            case TranslateServerEvent.sourceTranscriptFailed.rawValue:
+                let message = (json["error"] as? [String: Any])?["message"] as? String
+                    ?? "Source transcription failed"
+                self.onError?(message)
+
             case TranslateServerEvent.responseAudioTranscriptText.rawValue:
-                // 增量翻译文本
-                if let delta = json["delta"] as? String {
-                    print("💬 [Translate] 翻译片段: \(delta)")
-                    self.onTranslationDelta?(delta)
-                }
+                guard let responseID = json["response_id"] as? String else { return }
+                self.onTranslation?(TranslateTextEvent(
+                    responseID: responseID,
+                    itemID: json["item_id"] as? String,
+                    confirmedText: json["text"] as? String ?? "",
+                    pendingText: json["stash"] as? String ?? "",
+                    isFinal: false
+                ))
 
             case TranslateServerEvent.responseAudioTranscriptDone.rawValue:
-                // 翻译文本完成（输出音频+文本模式）
-                if let text = json["text"] as? String {
-                    print("✅ [Translate] 翻译完成: \(text)")
-                    self.onTranslationText?(text)
-                }
+                guard let responseID = json["response_id"] as? String else { return }
+                self.onTranslation?(TranslateTextEvent(
+                    responseID: responseID,
+                    itemID: json["item_id"] as? String,
+                    confirmedText: json["transcript"] as? String ?? "",
+                    pendingText: "",
+                    isFinal: true
+                ))
+
+            case TranslateServerEvent.responseTextText.rawValue:
+                guard let responseID = json["response_id"] as? String else { return }
+                self.onTranslation?(TranslateTextEvent(
+                    responseID: responseID,
+                    itemID: json["item_id"] as? String,
+                    confirmedText: json["text"] as? String ?? "",
+                    pendingText: json["stash"] as? String ?? "",
+                    isFinal: false
+                ))
 
             case TranslateServerEvent.responseTextDone.rawValue:
-                // 翻译文本完成（仅文本模式）
-                if let text = json["text"] as? String {
-                    print("✅ [Translate] 翻译完成(文本): \(text)")
-                    self.onTranslationText?(text)
-                }
+                guard let responseID = json["response_id"] as? String else { return }
+                self.onTranslation?(TranslateTextEvent(
+                    responseID: responseID,
+                    itemID: json["item_id"] as? String,
+                    confirmedText: json["text"] as? String ?? "",
+                    pendingText: "",
+                    isFinal: true
+                ))
 
             case TranslateServerEvent.responseAudioDelta.rawValue:
-                if let base64Audio = json["delta"] as? String,
+                if let responseID = json["response_id"] as? String,
+                   let base64Audio = json["delta"] as? String,
                    let audioData = Data(base64Encoded: base64Audio) {
-                    self.onAudioDelta?(audioData)
-                    self.handleAudioChunk(audioData)
+                    self.appendAudioChunk(audioData, responseID: responseID)
                 }
 
             case TranslateServerEvent.responseAudioDone.rawValue:
-                self.isCollectingAudio = false
-                if !self.audioBuffer.isEmpty {
-                    self.playAudio(self.audioBuffer)
-                    self.audioBuffer = Data()
+                if let responseID = json["response_id"] as? String {
+                    self.markAudioResponseFinished(responseID)
                 }
-                self.audioChunkCount = 0
-                self.hasStartedPlaying = false
-                self.onAudioDone?()
+
+            case TranslateServerEvent.sessionFinished.rawValue:
+                self.hasReceivedSessionFinished = true
+                self.onSessionFinished?()
+                self.completeFinishIfReady()
 
             case TranslateServerEvent.error.rawValue:
                 if let error = json["error"] as? [String: Any],
@@ -530,48 +660,83 @@ class LiveTranslateService: NSObject {
 
     // MARK: - Audio Playback
 
-    private func handleAudioChunk(_ audioData: Data) {
-        if !isCollectingAudio {
-            isCollectingAudio = true
-            audioBuffer = Data()
-            audioChunkCount = 0
-            hasStartedPlaying = false
+    private func appendAudioChunk(_ audioData: Data, responseID: String) {
+        audioQueue.append(audioData, responseID: responseID)
+        publishPlaybackState()
+    }
 
-            if isPlaybackEngineRunning {
-                stopPlaybackEngine()
-                setupPlaybackEngine()
-                startPlaybackEngine()
-                playerNode?.play()
-            }
+    private func markAudioResponseFinished(_ responseID: String) {
+        audioQueue.markServerFinished(responseID)
+        playNextResponseIfReady()
+    }
+
+    private func playNextResponseIfReady() {
+        guard let response = audioQueue.beginNextIfReady() else {
+            publishPlaybackState()
+            completeFinishIfReady()
+            return
         }
 
-        audioChunkCount += 1
+        let responseID = response.responseID
+        publishPlaybackState()
 
-        if !hasStartedPlaying {
-            audioBuffer.append(audioData)
-            if audioChunkCount >= minChunksBeforePlay {
-                hasStartedPlaying = true
-                playAudio(audioBuffer)
-                audioBuffer = Data()
+        guard let playerNode = playerNode,
+              let playbackFormat = playbackFormat else {
+            completePlayback(responseID)
+            return
+        }
+
+        guard !response.data.isEmpty,
+              let pcmBuffer = createPCMBuffer(from: response.data, format: playbackFormat) else {
+            completePlayback(responseID)
+            return
+        }
+
+        if !isPlaybackEngineRunning && !startPlaybackEngine() {
+            completePlayback(responseID)
+            return
+        }
+
+        playerNode.scheduleBuffer(pcmBuffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.completePlayback(responseID)
             }
-        } else {
-            playAudio(audioData)
+        }
+        if !playerNode.isPlaying {
+            playerNode.play()
         }
     }
 
-    private func playAudio(_ audioData: Data) {
-        guard let playerNode = playerNode,
-              let playbackFormat = playbackFormat else { return }
+    private func completePlayback(_ responseID: String) {
+        guard audioQueue.complete(responseID) else { return }
+        onPlaybackCompleted?(responseID)
+        publishPlaybackState()
+        playNextResponseIfReady()
+    }
 
-        if !isPlaybackEngineRunning {
-            startPlaybackEngine()
-            playerNode.play()
-        } else if !playerNode.isPlaying {
-            playerNode.play()
+    private func cancelPlaybackQueue() {
+        playerNode?.stop()
+        playerNode?.reset()
+        audioQueue.reset()
+        publishPlaybackState()
+        completeFinishIfReady(force: true)
+    }
+
+    private func publishPlaybackState() {
+        let state: TranslationPlaybackState = audioQueue.activeResponseID.map {
+            .playing(responseID: $0)
+        } ?? .idle
+        onPlaybackStateChanged?(state, audioQueue.pendingCount)
+    }
+
+    private func completeFinishIfReady(force: Bool = false) {
+        guard force || (hasReceivedSessionFinished && audioQueue.isEmpty) else {
+            return
         }
-
-        guard let pcmBuffer = createPCMBuffer(from: audioData, format: playbackFormat) else { return }
-        playerNode.scheduleBuffer(pcmBuffer)
+        finishTimeoutWorkItem?.cancel()
+        finishTimeoutWorkItem = nil
+        finishContinuation?.resume()
+        finishContinuation = nil
     }
 
     private func createPCMBuffer(from data: Data, format: AVAudioFormat) -> AVAudioPCMBuffer? {

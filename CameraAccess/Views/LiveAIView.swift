@@ -75,14 +75,14 @@ struct LiveAIView: View {
                             }
                             .padding()
                         }
-                        .onChange(of: viewModel.conversationHistory.count) { _ in
+                        .onChange(of: viewModel.conversationHistory.count) { _, _ in
                             if let lastMessage = viewModel.conversationHistory.last {
                                 withAnimation {
                                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                                 }
                             }
                         }
-                        .onChange(of: viewModel.currentTranscript) { _ in
+                        .onChange(of: viewModel.currentTranscript) { _, _ in
                             withAnimation {
                                 proxy.scrollTo("current", anchor: .bottom)
                             }
@@ -126,19 +126,19 @@ struct LiveAIView: View {
                 }
             }
         }
-        .onChange(of: viewModel.isConnected) { isConnected in
+        .onChange(of: viewModel.isConnected) { _, isConnected in
             if isConnected, !viewModel.isRecording {
                 viewModel.startRecording()
             }
         }
-        .onChange(of: viewModel.inputMode) { mode in
+        .onChange(of: viewModel.inputMode) { _, mode in
             if mode == .vision {
                 startFrameUpdates()
             } else {
                 stopFrameUpdates()
             }
         }
-        .onChange(of: streamViewModel.streamingStatus) { status in
+        .onChange(of: streamViewModel.streamingStatus) { _, status in
             guard viewModel.inputMode == .vision, status != .streaming else { return }
             viewModel.handleVisionStreamFailure()
         }

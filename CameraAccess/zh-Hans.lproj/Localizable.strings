@@ -368,6 +368,14 @@
 "livetranslate.source" = "源语言";
 "livetranslate.target" = "目标语言";
 "livetranslate.clear" = "清除";
+"livetranslate.latest" = "最新";
+"livetranslate.translating" = "翻译中…";
+"livetranslate.finalizing" = "正在完成最后一句…";
+"livetranslate.playing" = "正在播报";
+"livetranslate.pending" = "· 待播 %d 条";
+"livetranslate.vision.title" = "视觉增强";
+"livetranslate.vision.off" = "已关闭，不读取或上传画面";
+"livetranslate.vision.on" = "每轮讲话上传 1 张最新眼镜画面";
 
 // Live Translate Settings
 "livetranslate.settings.title" = "翻译设置";
@@ -382,9 +390,12 @@
 "livetranslate.settings.imageEnhance.footer" = "启用视觉增强可提高同音异义词的翻译准确性";
 "livetranslate.settings.history" = "翻译历史";
 "livetranslate.settings.clearHistory" = "清空历史";
+"livetranslate.settings.clearHistory.confirm.title" = "清空翻译历史？";
+"livetranslate.settings.clearHistory.confirm.message" = "所有已保存的双语记录都将被删除，此操作无法撤销。";
 "livetranslate.settings.historyCount" = "共 %d 条翻译记录";
 "common.done" = "完成";
 "common.ok" = "确定";
+"common.cancel" = "取消";
 
 // Live Translate Languages
 "livetranslate.lang.en" = "英语";

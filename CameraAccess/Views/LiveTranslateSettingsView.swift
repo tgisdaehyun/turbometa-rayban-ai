@@ -8,6 +8,7 @@ import SwiftUI
 struct LiveTranslateSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var viewModel: LiveTranslateViewModel
+    @State private var showClearHistoryConfirmation = false
 
     var body: some View {
         NavigationView {
@@ -132,7 +133,7 @@ struct LiveTranslateSettingsView: View {
                 if !viewModel.translationHistory.isEmpty {
                     Section {
                         Button(role: .destructive) {
-                            viewModel.clearHistory()
+                            showClearHistoryConfirmation = true
                         } label: {
                             HStack {
                                 Image(systemName: "trash")
@@ -154,6 +155,18 @@ struct LiveTranslateSettingsView: View {
                         dismiss()
                     }
                 }
+            }
+            .confirmationDialog(
+                "livetranslate.settings.clearHistory.confirm.title".localized,
+                isPresented: $showClearHistoryConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("livetranslate.settings.clearHistory".localized, role: .destructive) {
+                    viewModel.clearHistory()
+                }
+                Button("common.cancel".localized, role: .cancel) {}
+            } message: {
+                Text("livetranslate.settings.clearHistory.confirm.message".localized)
             }
         }
     }

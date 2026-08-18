@@ -348,7 +348,7 @@ struct SettingsView: View {
                     APIKeySettingsView(provider: providerManager.currentProvider)
                 }
             }
-            .onChange(of: showAPIKeySettings) { isShowing in
+            .onChange(of: showAPIKeySettings) { _, isShowing in
                 // 当 API Key 设置界面关闭时，刷新状态
                 if !isShowing {
                     refreshAPIKeyStatus()
@@ -357,7 +357,7 @@ struct SettingsView: View {
             .sheet(isPresented: $showProviderSettings) {
                 APIProviderSettingsView()
             }
-            .onChange(of: showProviderSettings) { isShowing in
+            .onChange(of: showProviderSettings) { _, isShowing in
                 if !isShowing {
                     refreshAPIKeyStatus()
                 }
@@ -380,7 +380,7 @@ struct SettingsView: View {
             .sheet(isPresented: $showGoogleAPIKeySettings) {
                 GoogleAPIKeySettingsView()
             }
-            .onChange(of: showGoogleAPIKeySettings) { isShowing in
+            .onChange(of: showGoogleAPIKeySettings) { _, isShowing in
                 // 当 Google API Key 设置界面关闭时，刷新状态
                 if !isShowing {
                     refreshAPIKeyStatus()
