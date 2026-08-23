@@ -8,7 +8,8 @@ import Foundation
 // MARK: - 支持的语种
 
 enum TranslateLanguage: String, CaseIterable, Codable, Identifiable {
-    // 支持音频+文本输出的语种
+    // Qwen3.5-LiveTranslate 当前应用支持的语种。
+    // 目标语种的音频输出能力由 supportsAudioOutput 明确声明；其余语种仍可作为文本目标。
     case en = "en"      // 英语
     case zh = "zh"      // 中文
     case ja = "ja"      // 日语
@@ -21,7 +22,7 @@ enum TranslateLanguage: String, CaseIterable, Codable, Identifiable {
     case it = "it"      // 意大利语
     case yue = "yue"    // 粤语
 
-    // 仅支持输入（作为源语言）的语种
+    // 其余当前应用支持的语种
     case id = "id"      // 印尼语
     case vi = "vi"      // 越南语
     case th = "th"      // 泰语
@@ -78,19 +79,24 @@ enum TranslateLanguage: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    /// 是否支持作为目标语言（输出音频+文本）
+    /// 是否支持作为目标语言输出音频。
+    ///
+    /// Qwen3.5-LiveTranslate 的粤语和希腊语在当前模型中仅支持文本输出；
+    /// 其余枚举语种均在官方音频+文本语种列表中。
     var supportsAudioOutput: Bool {
         switch self {
-        case .en, .zh, .ja, .ko, .fr, .de, .ru, .es, .pt, .it, .yue:
+        case .en, .zh, .ja, .ko, .fr, .de, .ru, .es, .pt, .it,
+             .id, .vi, .th, .ar, .hi, .tr:
             return true
-        case .id, .vi, .th, .ar, .hi, .el, .tr:
+        case .yue, .el:
             return false
         }
     }
 
-    /// 可作为目标语言的语种
+    /// 可作为目标语言的语种（音频+文本或仅文本）。
+    /// 仅文本目标仍可在关闭语音输出时使用。
     static var targetLanguages: [TranslateLanguage] {
-        allCases.filter { $0.supportsAudioOutput }
+        allCases
     }
 
     /// 所有源语言
@@ -102,56 +108,33 @@ enum TranslateLanguage: String, CaseIterable, Codable, Identifiable {
 // MARK: - 翻译音色
 
 enum TranslateVoice: String, CaseIterable, Codable, Identifiable {
-    case cherry = "Cherry"
-    case nofish = "Nofish"
-    case jada = "Jada"
-    case dylan = "Dylan"
-    case sunny = "Sunny"
-    case peter = "Peter"
-    case kiki = "Kiki"
-    case eric = "Eric"
+    case tina = "Tina"
+    case cindy = "Cindy"
+    case lioraMira = "Liora Mira"
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .cherry: return "livetranslate.voice.cherry".localized
-        case .nofish: return "livetranslate.voice.nofish".localized
-        case .jada: return "livetranslate.voice.jada".localized
-        case .dylan: return "livetranslate.voice.dylan".localized
-        case .sunny: return "livetranslate.voice.sunny".localized
-        case .peter: return "livetranslate.voice.peter".localized
-        case .kiki: return "livetranslate.voice.kiki".localized
-        case .eric: return "livetranslate.voice.eric".localized
+        case .tina: return "livetranslate.voice.tina".localized
+        case .cindy: return "livetranslate.voice.cindy".localized
+        case .lioraMira: return "livetranslate.voice.liora_mira".localized
         }
     }
 
     var description: String {
         switch self {
-        case .cherry: return "livetranslate.voice.cherry.desc".localized
-        case .nofish: return "livetranslate.voice.nofish.desc".localized
-        case .jada: return "livetranslate.voice.jada.desc".localized
-        case .dylan: return "livetranslate.voice.dylan.desc".localized
-        case .sunny: return "livetranslate.voice.sunny.desc".localized
-        case .peter: return "livetranslate.voice.peter.desc".localized
-        case .kiki: return "livetranslate.voice.kiki.desc".localized
-        case .eric: return "livetranslate.voice.eric.desc".localized
+        case .tina: return "livetranslate.voice.tina.desc".localized
+        case .cindy: return "livetranslate.voice.cindy.desc".localized
+        case .lioraMira: return "livetranslate.voice.liora_mira.desc".localized
         }
     }
 
-    /// 支持的语种（音色可能只支持部分语种）
+    /// Qwen3.5-LiveTranslate 三个系统音色都支持的当前应用语种子集。
+    /// 粤语和希腊语为文本目标，不作为音频播报语种声明。
     var supportedLanguages: [TranslateLanguage] {
-        switch self {
-        case .cherry, .nofish:
-            // 支持多语种
-            return [.zh, .en, .fr, .de, .ru, .it, .es, .pt, .ja, .ko]
-        case .jada, .dylan, .sunny, .peter, .eric:
-            // 仅支持中文
-            return [.zh]
-        case .kiki:
-            // 仅支持粤语
-            return [.yue]
-        }
+        [.zh, .en, .fr, .de, .ru, .it, .es, .pt, .ja, .ko,
+         .id, .vi, .th, .ar, .hi, .tr]
     }
 
     /// 检查音色是否支持指定语种

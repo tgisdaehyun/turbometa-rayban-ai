@@ -61,6 +61,22 @@ enum AudioSessionPolicy {
 
 class LiveTranslateService: NSObject {
 
+    /// Builds the output-related session fields shared by configuration and
+    /// tests. Qwen3.5 accepts a voice only when audio is one of the requested
+    /// modalities; text-only sessions must omit the key altogether.
+    static func sessionOutputFields(
+        audioEnabled: Bool,
+        voice: TranslateVoice
+    ) -> [String: Any] {
+        var fields: [String: Any] = [
+            "modalities": audioEnabled ? ["text", "audio"] : ["text"]
+        ]
+        if audioEnabled {
+            fields["voice"] = voice.rawValue
+        }
+        return fields
+    }
+
     // WebSocket
     private var webSocket: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -92,7 +108,7 @@ class LiveTranslateService: NSObject {
     // Translation settings
     private var sourceLanguage: TranslateLanguage = .en
     private var targetLanguage: TranslateLanguage = .zh
-    private var voice: TranslateVoice = .cherry
+    private var voice: TranslateVoice = .tina
     private var audioOutputEnabled = true
 
     // Audio resampling
@@ -262,14 +278,15 @@ class LiveTranslateService: NSObject {
         self.sourceLanguage = sourceLanguage
         self.targetLanguage = targetLanguage
         self.voice = voice
-        if self.audioOutputEnabled && !audioEnabled {
+        let normalizedAudioEnabled = audioEnabled && targetLanguage.supportsAudioOutput
+        if self.audioOutputEnabled && !normalizedAudioEnabled {
             clearPlaybackQueue()
             stopPlaybackEngine()
             if !isRecording {
                 releaseAudioSession()
             }
         }
-        self.audioOutputEnabled = audioEnabled
+        self.audioOutputEnabled = normalizedAudioEnabled
 
         // 如果已连接，重新配置会话
         if webSocket != nil {
@@ -278,41 +295,38 @@ class LiveTranslateService: NSObject {
     }
 
     private func configureSession() {
-        var modalities: [String] = ["text"]
-        if audioOutputEnabled {
-            modalities.append("audio")
-        }
+        var session = Self.sessionOutputFields(
+            audioEnabled: audioOutputEnabled,
+            voice: voice
+        )
+        // LiveTranslate accepts raw PCM. The audio tap below sends 16-bit
+        // little-endian samples at the declared sample rate; `pcm16`/`pcm24`
+        // are not valid LiveTranslate format values.
+        session["sample_rate"] = 16000
+        session["input_audio_format"] = "pcm"
+        session["output_audio_format"] = "pcm"
+        session["input_audio_transcription"] = [
+            "model": "qwen3-asr-flash-realtime",
+            "language": sourceLanguage.rawValue
+        ]
+        session["translation"] = [
+            "language": targetLanguage.rawValue
+        ]
+        session["turn_detection"] = [
+            "type": "server_vad",
+            "threshold": 0.5,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 500,
+            "create_response": true,
+            // A new speech turn must not cancel generation for the
+            // previous one; local playback is serialized separately.
+            "interrupt_response": false
+        ]
 
         let sessionConfig: [String: Any] = [
             "event_id": generateEventId(),
             "type": TranslateClientEvent.sessionUpdate.rawValue,
-            "session": [
-                "modalities": modalities,
-                "voice": voice.rawValue,
-                // LiveTranslate accepts raw PCM. The audio tap below sends
-                // 16-bit little-endian samples at the declared sample rate;
-                // `pcm16`/`pcm24` are not valid LiveTranslate format values.
-                "sample_rate": 16000,
-                "input_audio_format": "pcm",
-                "output_audio_format": "pcm",
-                "input_audio_transcription": [
-                    "model": "qwen3-asr-flash-realtime",
-                    "language": sourceLanguage.rawValue
-                ],
-                "translation": [
-                    "language": targetLanguage.rawValue
-                ],
-                "turn_detection": [
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500,
-                    "create_response": true,
-                    // A new speech turn must not cancel generation for the
-                    // previous one; local playback is serialized separately.
-                    "interrupt_response": false
-                ]
-            ]
+            "session": session
         ]
 
         sendEvent(sessionConfig)

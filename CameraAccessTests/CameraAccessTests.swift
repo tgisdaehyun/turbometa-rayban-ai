@@ -445,6 +445,148 @@ final class LiveTranslateCoordinatorTests: XCTestCase {
 
 }
 
+final class LiveTranslateVoiceTests: XCTestCase {
+
+  func testQwen35VoicesUseOfficialRawValues() {
+    XCTAssertEqual(TranslateVoice.tina.rawValue, "Tina")
+    XCTAssertEqual(TranslateVoice.cindy.rawValue, "Cindy")
+    XCTAssertEqual(TranslateVoice.lioraMira.rawValue, "Liora Mira")
+    XCTAssertEqual(TranslateVoice.allCases.count, 3)
+  }
+
+  func testQwen35TargetLanguageAudioSupportMatchesCurrentAppLanguages() {
+    XCTAssertTrue(TranslateLanguage.en.supportsAudioOutput)
+    XCTAssertTrue(TranslateLanguage.id.supportsAudioOutput)
+    XCTAssertTrue(TranslateLanguage.vi.supportsAudioOutput)
+    XCTAssertTrue(TranslateLanguage.th.supportsAudioOutput)
+    XCTAssertTrue(TranslateLanguage.ar.supportsAudioOutput)
+    XCTAssertTrue(TranslateLanguage.hi.supportsAudioOutput)
+    XCTAssertTrue(TranslateLanguage.tr.supportsAudioOutput)
+    XCTAssertFalse(TranslateLanguage.yue.supportsAudioOutput)
+    XCTAssertFalse(TranslateLanguage.el.supportsAudioOutput)
+
+    XCTAssertEqual(
+      TranslateLanguage.targetLanguages.map(\.rawValue),
+      ["en", "zh", "ja", "ko", "fr", "de", "ru", "es", "pt", "it",
+       "yue", "id", "vi", "th", "ar", "hi", "el", "tr"]
+    )
+  }
+
+  func testQwen35VoicesAdvertiseOnlyCurrentOfficialAudioLanguages() {
+    let expected = ["zh", "en", "fr", "de", "ru", "it", "es", "pt", "ja", "ko",
+                    "id", "vi", "th", "ar", "hi", "tr"]
+    for voice in TranslateVoice.allCases {
+      XCTAssertEqual(voice.supportedLanguages.map(\.rawValue), expected)
+      XCTAssertFalse(voice.supports(language: .yue))
+      XCTAssertFalse(voice.supports(language: .el))
+    }
+  }
+
+  func testTextOnlySessionOmitsVoiceAndAudioSessionIncludesLegalVoice() {
+    let textOnly = LiveTranslateService.sessionOutputFields(
+      audioEnabled: false,
+      voice: .tina
+    )
+    XCTAssertEqual(textOnly["modalities"] as? [String], ["text"])
+    XCTAssertNil(textOnly["voice"])
+
+    let audio = LiveTranslateService.sessionOutputFields(
+      audioEnabled: true,
+      voice: .lioraMira
+    )
+    XCTAssertEqual(audio["modalities"] as? [String], ["text", "audio"])
+    XCTAssertEqual(audio["voice"] as? String, "Liora Mira")
+  }
+}
+
+@MainActor
+final class LiveTranslateVoiceMigrationTests: XCTestCase {
+
+  private let voiceKey = "translate_voice"
+  private let migrationKey = "translate_voice_migration_v2"
+  private let targetLanguageKey = "translate_target_language"
+  private let audioEnabledKey = "translate_audio_enabled"
+
+  func testLegacyVoicesMigrateToTinaAndPersistOnce() {
+    let defaults = UserDefaults.standard
+    let originalValues = [
+      voiceKey: defaults.object(forKey: voiceKey),
+      migrationKey: defaults.object(forKey: migrationKey),
+      targetLanguageKey: defaults.object(forKey: targetLanguageKey),
+      audioEnabledKey: defaults.object(forKey: audioEnabledKey)
+    ]
+    defer { restore(defaults: defaults, values: originalValues) }
+
+    for legacyVoice in ["Cherry", "Nofish", "Jada", "Dylan", "Sunny", "Peter", "Kiki", "Eric"] {
+      defaults.set(legacyVoice, forKey: voiceKey)
+      defaults.removeObject(forKey: migrationKey)
+      let url = defaultsTemporaryHistoryURL()
+      let viewModel = LiveTranslateViewModel(historyStorage: LiveTranslateHistoryStorage(fileURL: url))
+
+      XCTAssertEqual(viewModel.selectedVoice, .tina, "Legacy \(legacyVoice) must migrate to Tina")
+      XCTAssertEqual(defaults.string(forKey: voiceKey), TranslateVoice.tina.rawValue)
+      XCTAssertTrue(defaults.bool(forKey: migrationKey))
+      try? FileManager.default.removeItem(at: url)
+    }
+  }
+
+  func testCompletedMigrationRepairsLegacyOrCorruptValue() {
+    let defaults = UserDefaults.standard
+    let originalValues = [
+      voiceKey: defaults.object(forKey: voiceKey),
+      migrationKey: defaults.object(forKey: migrationKey)
+    ]
+    defer { restore(defaults: defaults, values: originalValues) }
+
+    defaults.set(true, forKey: migrationKey)
+    defaults.set("Cherry", forKey: voiceKey)
+    let url = defaultsTemporaryHistoryURL()
+    let viewModel = LiveTranslateViewModel(historyStorage: LiveTranslateHistoryStorage(fileURL: url))
+
+    XCTAssertEqual(viewModel.selectedVoice, .tina)
+    XCTAssertEqual(defaults.string(forKey: voiceKey), TranslateVoice.tina.rawValue)
+    try? FileManager.default.removeItem(at: url)
+  }
+
+  func testRestoredTextOnlyTargetDisablesAudioWithoutChangingTarget() {
+    let defaults = UserDefaults.standard
+    let originalValues = [
+      targetLanguageKey: defaults.object(forKey: targetLanguageKey),
+      audioEnabledKey: defaults.object(forKey: audioEnabledKey),
+      voiceKey: defaults.object(forKey: voiceKey),
+      migrationKey: defaults.object(forKey: migrationKey)
+    ]
+    defer { restore(defaults: defaults, values: originalValues) }
+
+    defaults.set(TranslateLanguage.yue.rawValue, forKey: targetLanguageKey)
+    defaults.set(true, forKey: audioEnabledKey)
+    defaults.set(TranslateVoice.tina.rawValue, forKey: voiceKey)
+    defaults.set(true, forKey: migrationKey)
+    let url = defaultsTemporaryHistoryURL()
+    let viewModel = LiveTranslateViewModel(historyStorage: LiveTranslateHistoryStorage(fileURL: url))
+
+    XCTAssertEqual(viewModel.targetLanguage, .yue)
+    XCTAssertFalse(viewModel.audioOutputEnabled)
+    XCTAssertFalse(defaults.bool(forKey: audioEnabledKey))
+    try? FileManager.default.removeItem(at: url)
+  }
+
+  private func defaultsTemporaryHistoryURL() -> URL {
+    FileManager.default.temporaryDirectory
+      .appendingPathComponent("live-translate-voice-(UUID().uuidString).json")
+  }
+
+  private func restore(defaults: UserDefaults, values: [String: Any?]) {
+    for (key, value) in values {
+      if let value {
+        defaults.set(value, forKey: key)
+      } else {
+        defaults.removeObject(forKey: key)
+      }
+    }
+  }
+}
+
 final class LiveTranslateAudioRoutePolicyTests: XCTestCase {
 
   func testGlassesMicrophoneDoesNotForcePhoneSpeaker() {

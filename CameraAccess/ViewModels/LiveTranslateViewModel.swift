@@ -10,6 +10,12 @@ import UIKit
 @MainActor
 class LiveTranslateViewModel: ObservableObject {
 
+    private static let translateVoiceDefaultsKey = "translate_voice"
+    private static let translateVoiceMigrationKey = "translate_voice_migration_v2"
+    private static let legacyTranslateVoiceRawValues: Set<String> = [
+        "Cherry", "Nofish", "Jada", "Dylan", "Sunny", "Peter", "Kiki", "Eric"
+    ]
+
     // MARK: - Connection State
     @Published var isConnected = false
     @Published var isRecording = false
@@ -47,6 +53,13 @@ class LiveTranslateViewModel: ObservableObject {
     @Published var targetLanguage: TranslateLanguage {
         didSet {
             UserDefaults.standard.set(targetLanguage.rawValue, forKey: "translate_target_language")
+            // Cantonese and Greek are text-only targets in Qwen3.5. Keep the
+            // selected target intact, but never leave an invalid audio mode
+            // enabled after restoring or changing the language.
+            if audioOutputEnabled && !targetLanguage.supportsAudioOutput {
+                audioOutputEnabled = false
+                return
+            }
             updateServiceSettings()
         }
     }
@@ -60,6 +73,10 @@ class LiveTranslateViewModel: ObservableObject {
 
     @Published var audioOutputEnabled: Bool {
         didSet {
+            if audioOutputEnabled && !targetLanguage.supportsAudioOutput {
+                audioOutputEnabled = false
+                return
+            }
             UserDefaults.standard.set(audioOutputEnabled, forKey: "translate_audio_enabled")
             updateServiceSettings()
         }
@@ -104,12 +121,20 @@ class LiveTranslateViewModel: ObservableObject {
         self.sourceLanguage = TranslateLanguage(rawValue: savedSource) ?? .en
 
         let savedTarget = UserDefaults.standard.string(forKey: "translate_target_language") ?? "zh"
-        self.targetLanguage = TranslateLanguage(rawValue: savedTarget) ?? .zh
+        let targetLanguageValue = TranslateLanguage(rawValue: savedTarget) ?? .zh
+        self.targetLanguage = targetLanguageValue
 
-        let savedVoice = UserDefaults.standard.string(forKey: "translate_voice") ?? "Cherry"
-        self.selectedVoice = TranslateVoice(rawValue: savedVoice) ?? .cherry
+        self.selectedVoice = Self.loadTranslateVoice()
 
-        self.audioOutputEnabled = UserDefaults.standard.object(forKey: "translate_audio_enabled") as? Bool ?? true
+        let savedAudioOutputEnabled = UserDefaults.standard.object(forKey: "translate_audio_enabled") as? Bool ?? true
+        let normalizedAudioOutputEnabled = Self.normalizedAudioOutputEnabled(
+            audioEnabled: savedAudioOutputEnabled,
+            targetLanguage: targetLanguageValue
+        )
+        self.audioOutputEnabled = normalizedAudioOutputEnabled
+        if savedAudioOutputEnabled != normalizedAudioOutputEnabled {
+            UserDefaults.standard.set(normalizedAudioOutputEnabled, forKey: "translate_audio_enabled")
+        }
         let privacyMigrationKey = "translate_image_privacy_default_off_v1"
         if !UserDefaults.standard.bool(forKey: privacyMigrationKey) {
             self.imageEnhanceEnabled = false
@@ -131,6 +156,49 @@ class LiveTranslateViewModel: ObservableObject {
         self.persistedRecordSignatures = Dictionary(uniqueKeysWithValues: translationHistory.map {
             ($0.id, Self.signature(for: $0))
         })
+    }
+
+    /// Loads the Qwen3.5 voice and performs the one-time migration from the
+    /// voices used by the previous Qwen3 realtime endpoint. Legacy values are
+    /// never sent to the server; they are replaced with the official default
+    /// Tina and persisted before the service can be configured.
+    private static func loadTranslateVoice(
+        defaults: UserDefaults = .standard
+    ) -> TranslateVoice {
+        let savedRawValue = defaults.string(forKey: translateVoiceDefaultsKey)
+        let migrationCompleted = defaults.bool(forKey: translateVoiceMigrationKey)
+
+        let voice: TranslateVoice
+        if migrationCompleted {
+            voice = TranslateVoice(rawValue: savedRawValue ?? "") ?? .tina
+        } else {
+            let savedVoice = savedRawValue.flatMap(TranslateVoice.init(rawValue:))
+            if let savedVoice,
+               !legacyTranslateVoiceRawValues.contains(savedRawValue ?? "") {
+                voice = savedVoice
+            } else {
+                voice = .tina
+            }
+            defaults.set(voice.rawValue, forKey: translateVoiceDefaultsKey)
+            defaults.set(true, forKey: translateVoiceMigrationKey)
+        }
+
+        // If a value was removed or corrupted after migration, repair it so
+        // the next session still sends a legal voice.
+        if savedRawValue != voice.rawValue {
+            defaults.set(voice.rawValue, forKey: translateVoiceDefaultsKey)
+        }
+        return voice
+    }
+
+    /// Qwen3.5 only emits audio for the official audio-capable target
+    /// languages. This keeps a previously enabled audio preference from
+    /// producing an invalid session after a language-model upgrade.
+    static func normalizedAudioOutputEnabled(
+        audioEnabled: Bool,
+        targetLanguage: TranslateLanguage
+    ) -> Bool {
+        audioEnabled && targetLanguage.supportsAudioOutput
     }
 
     // MARK: - Connection
@@ -234,8 +302,10 @@ class LiveTranslateViewModel: ObservableObject {
     // MARK: - Language Swap
 
     func swapLanguages() {
-        // 只有当两种语言都支持作为目标语言时才能交换
-        guard sourceLanguage.supportsAudioOutput && targetLanguage.supportsAudioOutput else {
+        // Text-only languages are valid targets when audio output is off, so
+        // swapping is gated by model support rather than audio capability.
+        guard TranslateLanguage.targetLanguages.contains(sourceLanguage),
+              TranslateLanguage.targetLanguages.contains(targetLanguage) else {
             errorMessage = "livetranslate.error.cannotSwap".localized
             showError = true
             return

@@ -115,6 +115,8 @@ struct LiveTranslateSettingsView: View {
                             Text("livetranslate.settings.audioOutput".localized)
                         }
                     }
+                    .disabled(!viewModel.targetLanguage.supportsAudioOutput)
+                    .opacity(viewModel.targetLanguage.supportsAudioOutput ? 1.0 : 0.5)
 
                     Toggle(isOn: $viewModel.imageEnhanceEnabled) {
                         HStack {
@@ -126,7 +128,10 @@ struct LiveTranslateSettingsView: View {
                 } header: {
                     Text("livetranslate.settings.output".localized)
                 } footer: {
-                    Text("livetranslate.settings.imageEnhance.footer".localized)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("livetranslate.settings.audioOutput.footer".localized)
+                        Text("livetranslate.settings.imageEnhance.footer".localized)
+                    }
                 }
 
                 // 历史记录

@@ -392,9 +392,10 @@
 "livetranslate.settings.targetLanguage" = "目标语言";
 "livetranslate.settings.targetLanguage.footer" = "目标语言支持语音输出";
 "livetranslate.settings.voice" = "音色";
-"livetranslate.settings.voice.footer" = "不同音色支持不同的语种";
+"livetranslate.settings.voice.footer" = "Qwen3.5 音色均支持相同的多语种范围";
 "livetranslate.settings.output" = "输出设置";
 "livetranslate.settings.audioOutput" = "语音输出";
+"livetranslate.settings.audioOutput.footer" = "粤语和希腊语目标仅支持文本输出";
 "livetranslate.settings.imageEnhance" = "视觉增强";
 "livetranslate.settings.imageEnhance.footer" = "启用视觉增强可提高同音异义词的翻译准确性";
 "livetranslate.settings.history" = "翻译历史";
@@ -427,23 +428,13 @@
 "livetranslate.lang.tr" = "土耳其语";
 
 // Live Translate Voices
-"livetranslate.voice.cherry" = "Cherry";
-"livetranslate.voice.nofish" = "Nofish";
-"livetranslate.voice.jada" = "Jada";
-"livetranslate.voice.dylan" = "Dylan";
-"livetranslate.voice.sunny" = "Sunny";
-"livetranslate.voice.peter" = "Peter";
-"livetranslate.voice.kiki" = "Kiki";
-"livetranslate.voice.eric" = "Eric";
+"livetranslate.voice.tina" = "Tina";
+"livetranslate.voice.cindy" = "Cindy";
+"livetranslate.voice.liora_mira" = "Liora Mira";
 
-"livetranslate.voice.cherry.desc" = "温暖女声，支持多语种";
-"livetranslate.voice.nofish.desc" = "自然女声，支持多语种";
-"livetranslate.voice.jada.desc" = "活泼女声，仅支持中文";
-"livetranslate.voice.dylan.desc" = "磁性男声，仅支持中文";
-"livetranslate.voice.sunny.desc" = "阳光女声，仅支持中文";
-"livetranslate.voice.peter.desc" = "稳重男声，仅支持中文";
-"livetranslate.voice.kiki.desc" = "粤语女声，仅支持粤语";
-"livetranslate.voice.eric.desc" = "成熟男声，仅支持中文";
+"livetranslate.voice.tina.desc" = "默认多语种音色";
+"livetranslate.voice.cindy.desc" = "多语种音色";
+"livetranslate.voice.liora_mira.desc" = "多语种音色";
 
 // Live Translate Errors
 "livetranslate.error.title" = "翻译错误";
