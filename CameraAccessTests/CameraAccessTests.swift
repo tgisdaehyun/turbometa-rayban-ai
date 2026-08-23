@@ -221,7 +221,7 @@ final class LiveAIInputModeTests: XCTestCase {
 
 final class LiveTranslateCoordinatorTests: XCTestCase {
 
-  func testStreamingTextUsesTextAndStashWithoutDuplicatingConfirmedPrefix() {
+  func testStreamingTextReplacesSnapshotWithoutDuplicatingConfirmedPrefix() {
     var coordinator = TranslationTurnCoordinator(sourceLanguage: .en, targetLanguage: .zh)
 
     var update = coordinator.receiveSource(
@@ -237,7 +237,31 @@ final class LiveTranslateCoordinatorTests: XCTestCase {
     update = coordinator.receiveTranslation(
       TranslateTextEvent(responseID: "response-1", itemID: "item-1", confirmedText: "你好", pendingText: "，世界", isFinal: false)
     )
-    XCTAssertEqual(update.turns.first?.translatedText, "你好，世界")
+    XCTAssertTrue(update.turns.isEmpty, "An assistant response without previous_item_id must stay hidden")
+
+    _ = coordinator.receiveLink(sourceItemID: "source-1", responseItemID: "item-1")
+    XCTAssertEqual(coordinator.finalize().turns.first?.translatedText, "你好，世界")
+  }
+
+  func testFinalSnapshotCanBeShorterThanPartialSnapshot() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .en, targetLanguage: .zh)
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "long interim source", pendingText: "", isFinal: false)
+    )
+    _ = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: "assistant-1", confirmedText: "long interim translation", pendingText: "", isFinal: false)
+    )
+    _ = coordinator.receiveLink(sourceItemID: "source-1", responseItemID: "assistant-1")
+
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "short", pendingText: "", isFinal: true)
+    )
+    let update = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: "assistant-1", confirmedText: "短", pendingText: "", isFinal: true)
+    )
+
+    XCTAssertEqual(update.recordsToUpsert.first?.originalText, "short")
+    XCTAssertEqual(update.recordsToUpsert.first?.translatedText, "短")
   }
 
   func testSourceAndTranslationArrivingOutOfOrderUpsertOneStableRecord() {
@@ -246,20 +270,75 @@ final class LiveTranslateCoordinatorTests: XCTestCase {
     let translationUpdate = coordinator.receiveTranslation(
       TranslateTextEvent(responseID: "response-1", itemID: "assistant-1", confirmedText: "你好", pendingText: "", isFinal: true)
     )
-    XCTAssertEqual(translationUpdate.recordsToUpsert.count, 1)
-    let firstID = try! XCTUnwrap(translationUpdate.recordsToUpsert.first?.id)
-    XCTAssertEqual(translationUpdate.recordsToUpsert.first?.originalText, "")
+    XCTAssertTrue(translationUpdate.recordsToUpsert.isEmpty)
 
     let sourceUpdate = coordinator.receiveSource(
       TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "Hello", pendingText: "", isFinal: true)
     )
-    XCTAssertEqual(sourceUpdate.recordsToUpsert.count, 1)
-    XCTAssertEqual(sourceUpdate.recordsToUpsert.first?.id, firstID)
-    XCTAssertEqual(sourceUpdate.recordsToUpsert.first?.originalText, "Hello")
-    XCTAssertEqual(sourceUpdate.recordsToUpsert.first?.translatedText, "你好")
+    XCTAssertTrue(sourceUpdate.recordsToUpsert.isEmpty)
+    let firstID = try! XCTUnwrap(sourceUpdate.turns.first?.id)
+
+    let linkedUpdate = coordinator.receiveLink(
+      sourceItemID: "source-1",
+      responseItemID: "assistant-1"
+    )
+    XCTAssertEqual(linkedUpdate.recordsToUpsert.count, 1)
+    XCTAssertEqual(linkedUpdate.recordsToUpsert.first?.id, firstID)
+    XCTAssertEqual(linkedUpdate.recordsToUpsert.first?.originalText, "Hello")
+    XCTAssertEqual(linkedUpdate.recordsToUpsert.first?.translatedText, "你好")
   }
 
-  func testExplicitItemLinksPairInterleavedResponsesWithTheirSources() {
+  func testAuthoritativeLinkArrivingInPiecesUpsertsOneStableRecord() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .en, targetLanguage: .zh)
+
+    _ = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: nil, confirmedText: "你好", pendingText: "", isFinal: true)
+    )
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "Hello", pendingText: "", isFinal: true)
+    )
+    XCTAssertTrue(coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: nil, confirmedText: "你好", pendingText: "", isFinal: true)
+    ).recordsToUpsert.isEmpty)
+
+    _ = coordinator.receiveResponseItem(responseID: "response-1", itemID: "assistant-1")
+    let sourceUpdate = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "Hello", pendingText: "", isFinal: true)
+    )
+    XCTAssertTrue(sourceUpdate.recordsToUpsert.isEmpty)
+
+    let linkedUpdate = coordinator.receiveLink(
+      sourceItemID: "source-1",
+      responseItemID: "assistant-1"
+    )
+    XCTAssertEqual(linkedUpdate.recordsToUpsert.map(\.originalText), ["Hello"])
+    XCTAssertEqual(linkedUpdate.recordsToUpsert.map(\.translatedText), ["你好"])
+  }
+
+  func testResponseDoneDoesNotMarkTranscriptFinalAndLinksDoNotUseFIFO() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .en, targetLanguage: .zh)
+
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "One", pendingText: "", isFinal: true)
+    )
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "source-2", confirmedText: "Two", pendingText: "", isFinal: true)
+    )
+    _ = coordinator.receiveResponseStarted(responseID: "response-1")
+    _ = coordinator.receiveResponseItem(responseID: "response-1", itemID: "assistant-1")
+    _ = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: "assistant-1", confirmedText: "一", pendingText: "", isFinal: false)
+    )
+    XCTAssertTrue(coordinator.receiveResponseFinished(responseID: "response-1").recordsToUpsert.isEmpty)
+    _ = coordinator.receiveLink(sourceItemID: "source-2", responseItemID: "assistant-1")
+    XCTAssertTrue(coordinator.finalize().recordsToUpsert.isEmpty, "The response must remain incomplete until transcript.done")
+    let finalUpdate = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: "assistant-1", confirmedText: "一", pendingText: "", isFinal: true)
+    )
+    XCTAssertEqual(finalUpdate.recordsToUpsert.map(\.originalText), ["Two"])
+  }
+
+  func testExplicitItemLinksPairInterleavedResponsesByAssistantItem() {
     var coordinator = TranslationTurnCoordinator(sourceLanguage: .en, targetLanguage: .zh)
     _ = coordinator.receiveSource(
       TranslateSourceTranscriptEvent(itemID: "source-1", confirmedText: "One", pendingText: "", isFinal: true)
@@ -269,6 +348,9 @@ final class LiveTranslateCoordinatorTests: XCTestCase {
     )
     _ = coordinator.receiveLink(sourceItemID: "source-2", responseItemID: "assistant-2")
     _ = coordinator.receiveLink(sourceItemID: "source-1", responseItemID: "assistant-1")
+
+    _ = coordinator.receiveResponseStarted(responseID: "response-1")
+    _ = coordinator.receiveResponseStarted(responseID: "response-2")
 
     _ = coordinator.receiveTranslation(
       TranslateTextEvent(responseID: "response-2", itemID: "assistant-2", confirmedText: "二", pendingText: "", isFinal: true)
@@ -280,9 +362,164 @@ final class LiveTranslateCoordinatorTests: XCTestCase {
     XCTAssertEqual(update.recordsToUpsert.map(\.originalText), ["One", "Two"])
     XCTAssertEqual(update.recordsToUpsert.map(\.translatedText), ["一", "二"])
   }
+
+  func testSourceItemIDsKeepDelayedTranscriptInItsOwnAuthoritativeTurn() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .zh, targetLanguage: .en)
+
+    _ = coordinator.receiveSpeechStarted(itemID: "vad-1")
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "vad-1", confirmedText: "第一句", pendingText: "", isFinal: false)
+    )
+    _ = coordinator.receiveSpeechStopped(itemID: "vad-1")
+    _ = coordinator.receiveSpeechStarted(itemID: "vad-2")
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "vad-2", confirmedText: "第二句", pendingText: "", isFinal: true)
+    )
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "vad-1", confirmedText: "第一句完成", pendingText: "", isFinal: true)
+    )
+
+    _ = coordinator.receiveResponseStarted(responseID: "response-1")
+    _ = coordinator.receiveResponseStarted(responseID: "response-2")
+    _ = coordinator.receiveLink(sourceItemID: "vad-1", responseItemID: "assistant-1")
+    _ = coordinator.receiveLink(sourceItemID: "vad-2", responseItemID: "assistant-2")
+    _ = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-2", itemID: "assistant-2", confirmedText: "Second", pendingText: "", isFinal: true)
+    )
+    let update = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: "assistant-1", confirmedText: "First", pendingText: "", isFinal: true)
+    )
+
+    XCTAssertEqual(update.recordsToUpsert.map(\.originalText), ["第一句完成", "第二句"])
+    XCTAssertEqual(update.recordsToUpsert.map(\.translatedText), ["First", "Second"])
+  }
+
+  func testInterleavedSourceEventsRemainCorrectWhenResponsesArriveOutOfOrder() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .zh, targetLanguage: .en)
+
+    _ = coordinator.receiveSpeechStarted(itemID: "vad-1")
+    _ = coordinator.receiveSpeechStopped(itemID: "vad-1")
+    _ = coordinator.receiveSpeechStarted(itemID: "vad-2")
+    _ = coordinator.receiveSpeechStopped(itemID: "vad-2")
+
+    // Simulate socket/ASR reordering: turn two completes before turn one has
+    // emitted any transcript packet.
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "vad-2", confirmedText: "第二句", pendingText: "", isFinal: true)
+    )
+    _ = coordinator.receiveSource(
+      TranslateSourceTranscriptEvent(itemID: "vad-1", confirmedText: "第一句", pendingText: "", isFinal: true)
+    )
+    _ = coordinator.receiveResponseStarted(responseID: "response-1")
+    _ = coordinator.receiveResponseStarted(responseID: "response-2")
+    _ = coordinator.receiveResponseItem(responseID: "response-1", itemID: "assistant-1")
+    _ = coordinator.receiveResponseItem(responseID: "response-2", itemID: "assistant-2")
+    _ = coordinator.receiveLink(sourceItemID: "vad-1", responseItemID: "assistant-1")
+    _ = coordinator.receiveLink(sourceItemID: "vad-2", responseItemID: "assistant-2")
+    _ = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: nil, confirmedText: "First", pendingText: "", isFinal: true)
+    )
+    let update = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-2", itemID: nil, confirmedText: "Second", pendingText: "", isFinal: true)
+    )
+
+    XCTAssertEqual(update.recordsToUpsert.map(\.originalText), ["第一句", "第二句"])
+    XCTAssertEqual(update.recordsToUpsert.map(\.translatedText), ["First", "Second"])
+  }
+
+  func testUnlinkedResponsesAreNeverPersistedOrDisplayed() {
+    var coordinator = TranslationTurnCoordinator(sourceLanguage: .zh, targetLanguage: .en)
+    let first = "The first finalized translation is deliberately long enough to exercise cumulative response detection."
+    let extended = first + " A later response appends another complete translated sentence."
+
+    _ = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-1", itemID: nil, confirmedText: first, pendingText: "", isFinal: true)
+    )
+    let update = coordinator.receiveTranslation(
+      TranslateTextEvent(responseID: "response-2", itemID: nil, confirmedText: extended, pendingText: "", isFinal: true)
+    )
+
+    XCTAssertTrue(update.recordsToUpsert.isEmpty)
+    XCTAssertTrue(update.turns.isEmpty)
+  }
+
+}
+
+final class LiveTranslateAudioRoutePolicyTests: XCTestCase {
+
+  func testGlassesMicrophoneDoesNotForcePhoneSpeaker() {
+    let options = LiveTranslateService.audioSessionOptions(usePhoneMic: false)
+
+    XCTAssertTrue(options.contains(.allowBluetoothHFP))
+    XCTAssertTrue(options.contains(.allowBluetoothA2DP))
+    XCTAssertFalse(options.contains(.defaultToSpeaker))
+  }
+
+  func testPhoneMicrophoneKeepsBluetoothPlaybackAvailable() {
+    let options = LiveTranslateService.audioSessionOptions(usePhoneMic: true)
+
+    XCTAssertFalse(options.contains(.allowBluetoothHFP))
+    XCTAssertTrue(options.contains(.allowBluetoothA2DP))
+    XCTAssertFalse(options.contains(.defaultToSpeaker))
+  }
+
+  func testLiveTranslatePolicyUsesDuplexHFPForGlassesMic() {
+    let configuration = LiveTranslateService.audioSessionConfiguration(usePhoneMic: false)
+
+    XCTAssertEqual(configuration.category, .playAndRecord)
+    XCTAssertEqual(configuration.mode, .voiceChat)
+    XCTAssertTrue(configuration.options.contains(.allowBluetoothHFP))
+    XCTAssertTrue(configuration.options.contains(.allowBluetoothA2DP))
+    XCTAssertFalse(configuration.options.contains(.defaultToSpeaker))
+  }
+
+  func testLiveTranslatePolicyUsesA2DPForPhoneMic() {
+    let configuration = LiveTranslateService.audioSessionConfiguration(usePhoneMic: true)
+
+    XCTAssertEqual(configuration.category, .playAndRecord)
+    XCTAssertEqual(configuration.mode, .default)
+    XCTAssertFalse(configuration.options.contains(.allowBluetoothHFP))
+    XCTAssertTrue(configuration.options.contains(.allowBluetoothA2DP))
+    XCTAssertFalse(configuration.options.contains(.defaultToSpeaker))
+  }
+
+  func testStandalonePlaybackPolicyDoesNotRequestInputProfilesOrSpeaker() {
+    let configuration = AudioSessionPolicy.standalonePlayback
+
+    XCTAssertEqual(configuration.category, .playback)
+    XCTAssertEqual(configuration.mode, .spokenAudio)
+    XCTAssertTrue(configuration.options.contains(.duckOthers))
+    XCTAssertFalse(configuration.options.contains(.allowBluetoothHFP))
+    XCTAssertFalse(configuration.options.contains(.allowBluetoothA2DP))
+    XCTAssertFalse(configuration.options.contains(.defaultToSpeaker))
+  }
+
+  func testRealtimeGlassesDuplexPolicyUsesHFPOnly() {
+    let configuration = AudioSessionPolicy.glassesDuplex
+
+    XCTAssertEqual(configuration.category, .playAndRecord)
+    XCTAssertEqual(configuration.mode, .voiceChat)
+    XCTAssertTrue(configuration.options.contains(.allowBluetoothHFP))
+    XCTAssertTrue(configuration.options.contains(.allowBluetoothA2DP))
+    XCTAssertFalse(configuration.options.contains(.defaultToSpeaker))
+  }
 }
 
 final class LiveTranslateAudioQueueTests: XCTestCase {
+
+  func testPlaybackUsesResponseCreationOrderWhenAudioChunksArriveOutOfOrder() {
+    var queue = TranslationAudioQueue()
+    queue.register(responseID: "response-a")
+    queue.register(responseID: "response-b")
+    queue.append(Data([3, 4]), responseID: "response-b")
+    queue.append(Data([1, 2]), responseID: "response-a")
+    queue.markServerFinished("response-a")
+    queue.markServerFinished("response-b")
+
+    XCTAssertEqual(queue.beginNextIfReady()?.responseID, "response-a")
+    XCTAssertTrue(queue.complete("response-a"))
+    XCTAssertEqual(queue.beginNextIfReady()?.responseID, "response-b")
+  }
 
   func testResponseAudioDoneDoesNotCompleteUntilDataPlayedBack() {
     var queue = TranslationAudioQueue()
@@ -302,6 +539,69 @@ final class LiveTranslateAudioQueueTests: XCTestCase {
 }
 
 final class LiveTranslateHistoryStorageTests: XCTestCase {
+
+  func testLegacyRawArrayIsDeletedAfterProtocolGraphSchemaBump() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("live-translate-legacy-\(UUID().uuidString).json")
+    let legacyRecord = TranslateRecord(
+      sessionID: UUID(),
+      sourceItemID: "legacy-source",
+      responseID: "legacy-response",
+      sourceLanguage: .zh,
+      targetLanguage: .en,
+      originalText: "旧原文",
+      translatedText: "Legacy translation"
+    )
+    let legacy = try JSONEncoder().encode([legacyRecord])
+    try legacy.write(to: url)
+    let storage = LiveTranslateHistoryStorage(fileURL: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    XCTAssertTrue(storage.loadAll().isEmpty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+  }
+
+  func testOlderEnvelopeIsDeletedAfterProtocolGraphSchemaBump() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("live-translate-old-envelope-\(UUID().uuidString).json")
+    let record = TranslateRecord(
+      sessionID: UUID(),
+      sourceItemID: "old-source",
+      responseID: "old-response",
+      sourceLanguage: .zh,
+      targetLanguage: .en,
+      originalText: "旧原文",
+      translatedText: "Old translation"
+    )
+    let encodedRecords = try JSONSerialization.jsonObject(
+      with: JSONEncoder().encode([record])
+    )
+    let oldEnvelope: [String: Any] = [
+      "schemaVersion": LiveTranslateHistoryStorage.currentSchemaVersion - 1,
+      "records": encodedRecords
+    ]
+    try JSONSerialization.data(withJSONObject: oldEnvelope).write(to: url)
+    let storage = LiveTranslateHistoryStorage(fileURL: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    XCTAssertTrue(storage.loadAll().isEmpty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+  }
+
+  func testFutureEnvelopeIsIgnoredButPreserved() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("live-translate-future-envelope-\(UUID().uuidString).json")
+    let futureEnvelope: [String: Any] = [
+      "schemaVersion": LiveTranslateHistoryStorage.currentSchemaVersion + 1,
+      "records": []
+    ]
+    try JSONSerialization.data(withJSONObject: futureEnvelope).write(to: url)
+    let storage = LiveTranslateHistoryStorage(fileURL: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    XCTAssertTrue(storage.loadAll().isEmpty)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+  }
 
   func testHistoryUpsertIsAtomicAndDeduplicatedByResponse() throws {
     let url = FileManager.default.temporaryDirectory
@@ -357,5 +657,187 @@ final class LiveTranslateHistoryStorageTests: XCTestCase {
     XCTAssertNil(record.sessionID)
     XCTAssertNil(record.sourceItemID)
     XCTAssertNil(record.responseID)
+  }
+
+  func testDeleteRecordsRemovesOnlyTheSelectedSession() {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("live-translate-delete-\(UUID().uuidString).json")
+    let storage = LiveTranslateHistoryStorage(fileURL: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let firstSession = UUID()
+    let secondSession = UUID()
+    let first = TranslateRecord(
+      sessionID: firstSession,
+      sourceItemID: "source-1",
+      responseID: "response-1",
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "One",
+      translatedText: "一"
+    )
+    let second = TranslateRecord(
+      sessionID: secondSession,
+      sourceItemID: "source-2",
+      responseID: "response-2",
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "Two",
+      translatedText: "二"
+    )
+    _ = storage.upsert(first)
+    _ = storage.upsert(second)
+
+    let remaining = storage.deleteRecords(ids: [first.id])
+    XCTAssertEqual(remaining.map(\.id), [second.id])
+    let reloadedStorage = LiveTranslateHistoryStorage(fileURL: url)
+    XCTAssertEqual(reloadedStorage.loadAll().map(\.sessionID), [secondSession])
+  }
+}
+
+@MainActor
+final class LiveTranslateViewModelSessionTests: XCTestCase {
+
+  func testRestoredHistoryDoesNotPopulateTheLiveWorkspace() {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("live-translate-workspace-\(UUID().uuidString).json")
+    let storage = LiveTranslateHistoryStorage(fileURL: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    _ = storage.upsert(TranslateRecord(
+      sessionID: UUID(),
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "hello",
+      translatedText: "你好"
+    ))
+
+    let viewModel = LiveTranslateViewModel(historyStorage: storage)
+    XCTAssertTrue(viewModel.currentSessionRecords.isEmpty)
+    XCTAssertEqual(viewModel.historyRecordCount, 1)
+  }
+
+  func testClearHistorySynchronizesWorkspaceCountAndStorage() {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("live-translate-clear-\(UUID().uuidString).json")
+    let storage = LiveTranslateHistoryStorage(fileURL: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    _ = storage.upsert(TranslateRecord(
+      sessionID: UUID(),
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "hello",
+      translatedText: "你好"
+    ))
+    let viewModel = LiveTranslateViewModel(historyStorage: storage)
+
+    viewModel.clearHistory()
+
+    XCTAssertTrue(viewModel.currentSessionRecords.isEmpty)
+    XCTAssertEqual(viewModel.historyRecordCount, 0)
+    XCTAssertTrue(storage.loadAll().isEmpty)
+  }
+}
+
+final class TranslationSessionBuilderTests: XCTestCase {
+
+  func testGroupsSessionRecordsAndSortsTurnsAndSessions() {
+    let olderSession = UUID()
+    let newerSession = UUID()
+    let now = Date()
+    let olderTurn = TranslateRecord(
+      timestamp: now.addingTimeInterval(-20),
+      sessionID: olderSession,
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "first",
+      translatedText: "一"
+    )
+    let olderLastTurn = TranslateRecord(
+      timestamp: now.addingTimeInterval(-10),
+      sessionID: olderSession,
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "second",
+      translatedText: "二"
+    )
+    let newerTurn = TranslateRecord(
+      timestamp: now,
+      sessionID: newerSession,
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "new",
+      translatedText: "新"
+    )
+
+    let sessions = TranslationSessionBuilder.group(records: [olderLastTurn, newerTurn, olderTurn])
+    XCTAssertEqual(sessions.map(\.id), [newerSession, olderSession])
+    XCTAssertEqual(sessions[1].records.map(\.originalText), ["first", "second"])
+  }
+
+  func testLegacyRecordsRemainIndependentSessions() {
+    let first = TranslateRecord(
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "first",
+      translatedText: "一"
+    )
+    let second = TranslateRecord(
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "second",
+      translatedText: "二"
+    )
+
+    let sessions = TranslationSessionBuilder.group(records: [first, second])
+    XCTAssertEqual(sessions.count, 2)
+    XCTAssertTrue(sessions.allSatisfy { $0.records.count == 1 })
+    XCTAssertEqual(Set(sessions.map(\.id)), Set([first.id, second.id]))
+  }
+
+  func testMixedLanguageDirectionsStayInOneSession() {
+    let sessionID = UUID()
+    let englishToChinese = TranslateRecord(
+      sessionID: sessionID,
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "hello",
+      translatedText: "你好"
+    )
+    let chineseToEnglish = TranslateRecord(
+      sessionID: sessionID,
+      sourceLanguage: .zh,
+      targetLanguage: .en,
+      originalText: "世界",
+      translatedText: "world"
+    )
+
+    let sessions = TranslationSessionBuilder.group(records: [englishToChinese, chineseToEnglish])
+    XCTAssertEqual(sessions.count, 1)
+    XCTAssertEqual(sessions.first?.turnCount, 2)
+    XCTAssertEqual(sessions.first?.hasMixedLanguageDirections, true)
+    XCTAssertEqual(sessions.first?.records.map(\.sessionID), [sessionID, sessionID])
+  }
+
+  func testPreviewUsesOnlyTheFirstNonemptyTranslation() {
+    let sessionID = UUID()
+    let untranslated = TranslateRecord(
+      sessionID: sessionID,
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "source only",
+      translatedText: "  "
+    )
+    let translated = TranslateRecord(
+      sessionID: sessionID,
+      sourceLanguage: .en,
+      targetLanguage: .zh,
+      originalText: "hello",
+      translatedText: "你好"
+    )
+
+    let session = TranslationSessionBuilder.group(records: [untranslated, translated]).first
+    XCTAssertEqual(session?.previewText, "你好")
   }
 }

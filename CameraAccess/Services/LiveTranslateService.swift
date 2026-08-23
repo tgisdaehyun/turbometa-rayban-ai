@@ -1,11 +1,61 @@
 /*
  * Live Translate WebSocket Service
- * 基于 qwen3-livetranslate-flash-realtime 的实时翻译服务
+ * 基于 qwen3.5-livetranslate-flash-realtime 的实时翻译服务
  */
 
 import Foundation
 import UIKit
 import AVFoundation
+
+/// The audio-session choices used by the realtime audio services.
+///
+/// Keep these values as data so they can be tested without requiring an
+/// attached Bluetooth device.  A glasses-microphone session explicitly opts
+/// into Bluetooth input/output profiles, but never forces the phone speaker.
+struct AudioSessionConfiguration {
+    let category: AVAudioSession.Category
+    let mode: AVAudioSession.Mode
+    let options: AVAudioSession.CategoryOptions
+}
+
+enum AudioSessionPolicy {
+    /// Live Translate with the phone microphone can use the high quality A2DP
+    /// output profile while retaining a local input.
+    static func liveTranslate(usePhoneMic: Bool) -> AudioSessionConfiguration {
+        if usePhoneMic {
+            return AudioSessionConfiguration(
+                category: .playAndRecord,
+                mode: .default,
+                options: [.allowBluetoothA2DP]
+            )
+        }
+
+        // A glasses microphone requires the bidirectional HFP profile. Keep
+        // A2DP available for accessories exposing a separate high-quality
+        // output route; iOS still chooses HFP for the active input profile.
+        return AudioSessionConfiguration(
+            category: .playAndRecord,
+            mode: .voiceChat,
+            options: [.allowBluetoothHFP, .allowBluetoothA2DP]
+        )
+    }
+
+    /// Qwen Omni and Gemini Live both use the glasses microphone for duplex
+    /// conversations.
+    static let glassesDuplex = AudioSessionConfiguration(
+        category: .playAndRecord,
+        mode: .voiceChat,
+        options: [.allowBluetoothHFP, .allowBluetoothA2DP]
+    )
+
+    /// Standalone TTS/Quick Vision only needs an output session.  `.playback`
+    /// routes to Bluetooth A2DP without an A2DP category option.
+    static let standalonePlayback = AudioSessionConfiguration(
+        category: .playback,
+        mode: .spokenAudio,
+        options: [.duckOthers]
+    )
+}
 
 // MARK: - Service Class
 
@@ -17,7 +67,9 @@ class LiveTranslateService: NSObject {
 
     // Configuration
     private let apiKey: String
-    private let model = "qwen3-livetranslate-flash-realtime"
+    /// Alibaba's current recommended LiveTranslate model. The old qwen3
+    /// endpoint could emit cumulative responses without a reliable item graph.
+    private let model = "qwen3.5-livetranslate-flash-realtime"
     // 根据用户设置的区域动态获取 WebSocket URL
     private var baseURL: String {
         return APIProviderManager.staticLiveAIWebsocketURL
@@ -51,10 +103,16 @@ class LiveTranslateService: NSObject {
     var onConnected: (() -> Void)?
     var onSourceTranscript: ((TranslateSourceTranscriptEvent) -> Void)?
     var onTranslation: ((TranslateTextEvent) -> Void)?
+    /// Emits the authoritative response-id → assistant item-id association.
+    /// The coordinator keeps it even when the transcript arrives first.
+    var onResponseItem: ((_ responseID: String, _ responseItemID: String) -> Void)?
     var onTurnLink: ((_ sourceItemID: String, _ responseItemID: String) -> Void)?
     var onPlaybackStateChanged: ((TranslationPlaybackState, Int) -> Void)?
     var onPlaybackCompleted: ((String) -> Void)?
-    var onSpeechStarted: (() -> Void)?
+    var onSpeechStarted: ((_ itemID: String?) -> Void)?
+    var onSpeechStopped: ((_ itemID: String?) -> Void)?
+    var onResponseStarted: ((_ responseID: String) -> Void)?
+    var onResponseFinished: ((_ responseID: String) -> Void)?
     var onSessionFinished: (() -> Void)?
     var onError: ((String) -> Void)?
 
@@ -64,6 +122,12 @@ class LiveTranslateService: NSObject {
     private var finishContinuation: CheckedContinuation<Void, Never>?
     private var finishTimeoutWorkItem: DispatchWorkItem?
     private var hasReceivedSessionFinished = false
+    private var ownsAudioSession = false
+    private var usePhoneMic = false
+    private var preferredInputUID: String?
+    private var routeChangeObserver: NSObjectProtocol?
+    private var diagnosticEventLog: [String] = []
+    private let diagnosticEventLogCapacity = 200
 
     // Image sending. The view model invokes `sendImageFrame` once per server
     // VAD speech-start event; this guard makes the one-frame-per-turn contract
@@ -74,13 +138,19 @@ class LiveTranslateService: NSObject {
         self.apiKey = apiKey
         super.init()
         setupAudioEngine()
+        observeAudioRouteChanges()
+    }
+
+    deinit {
+        if let routeChangeObserver {
+            NotificationCenter.default.removeObserver(routeChangeObserver)
+        }
     }
 
     // MARK: - Audio Engine Setup
 
     private func setupAudioEngine() {
         audioEngine = AVAudioEngine()
-        setupPlaybackEngine()
     }
 
     private func setupPlaybackEngine() {
@@ -103,6 +173,19 @@ class LiveTranslateService: NSObject {
 
     @discardableResult
     private func startPlaybackEngine() -> Bool {
+        guard audioOutputEnabled else {
+            // A text-only translation must never activate or start an output
+            // engine.  This is also important when the setting is toggled
+            // while a websocket session is still connected.
+            return false
+        }
+
+        // Creating/preparing an output engine can make iOS renegotiate the
+        // current route. Keep connection and screen entry route-neutral by
+        // delaying this work until translated audio is actually ready.
+        if playbackEngine == nil || playerNode == nil {
+            setupPlaybackEngine()
+        }
         guard let playbackEngine = playbackEngine else { return false }
         if isPlaybackEngineRunning { return true }
 
@@ -161,6 +244,7 @@ class LiveTranslateService: NSObject {
         stopRecording()
         cancelPlaybackQueue()
         stopPlaybackEngine()
+        releaseAudioSession()
         finishTimeoutWorkItem?.cancel()
         finishTimeoutWorkItem = nil
         finishContinuation?.resume()
@@ -178,6 +262,13 @@ class LiveTranslateService: NSObject {
         self.sourceLanguage = sourceLanguage
         self.targetLanguage = targetLanguage
         self.voice = voice
+        if self.audioOutputEnabled && !audioEnabled {
+            clearPlaybackQueue()
+            stopPlaybackEngine()
+            if !isRecording {
+                releaseAudioSession()
+            }
+        }
         self.audioOutputEnabled = audioEnabled
 
         // 如果已连接，重新配置会话
@@ -275,42 +366,40 @@ class LiveTranslateService: NSObject {
 
         do {
             print("🎤 [Translate] 开始录音, 使用\(usePhoneMic ? "iPhone" : "蓝牙")麦克风")
+            self.usePhoneMic = usePhoneMic
 
             if let engine = audioEngine, engine.isRunning {
                 engine.stop()
                 engine.inputNode.removeTap(onBus: 0)
             }
 
-            let audioSession = AVAudioSession.sharedInstance()
-
-            if usePhoneMic {
-                // 使用 iPhone 麦克风 - 适合翻译对方说的话
-                try audioSession.setCategory(
-                    .playAndRecord,
-                    mode: .default,
-                    options: [.defaultToSpeaker]  // 不启用蓝牙，强制使用 iPhone 麦克风
-                )
-                print("🎙️ [Translate] 使用 iPhone 麦克风（翻译对方）")
-            } else {
-                // 使用蓝牙麦克风（眼镜）- 适合翻译自己说的话
-                try audioSession.setCategory(
-                    .playAndRecord,
-                    mode: .default,
-                    options: [.allowBluetoothHFP, .defaultToSpeaker]
-                )
-                print("🎙️ [Translate] 使用蓝牙麦克风（翻译自己）")
-            }
-            try audioSession.setActive(true)
-
-            // 打印当前音频输入设备
-            if let inputRoute = audioSession.currentRoute.inputs.first {
-                print("🎙️ [Translate] 当前输入设备: \(inputRoute.portName) (\(inputRoute.portType.rawValue))")
-            }
-
             guard let engine = audioEngine else {
                 print("❌ [Translate] 音频引擎未初始化")
                 return false
             }
+
+            let audioSession = AVAudioSession.sharedInstance()
+            let configuration = AudioSessionPolicy.liveTranslate(usePhoneMic: usePhoneMic)
+            try audioSession.setCategory(
+                configuration.category,
+                mode: configuration.mode,
+                options: configuration.options
+            )
+            try audioSession.setActive(true)
+            ownsAudioSession = true
+
+            // Input selection must not imply an output override. In
+            // particular, never use `.defaultToSpeaker`: translated audio
+            // should remain on the user's current Bluetooth/glasses route.
+            let preferredInputType: AVAudioSession.Port = usePhoneMic ? .builtInMic : .bluetoothHFP
+            let preferredInput = audioSession.availableInputs?.first {
+                $0.portType == preferredInputType
+            }
+            preferredInputUID = preferredInput?.uid
+            try audioSession.setPreferredInput(preferredInput)
+            print("🎙️ [Translate] 使用\(usePhoneMic ? "iPhone" : "蓝牙")麦克风")
+
+            logAudioRoute(audioSession, reason: "recording_started")
 
             let inputNode = engine.inputNode
             let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -330,10 +419,120 @@ class LiveTranslateService: NSObject {
             return true
 
         } catch {
+            releaseAudioSession()
             print("❌ [Translate] 启动录音失败: \(error.localizedDescription)")
             onError?("Failed to start recording: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// Allows the requested input route without forcing translated audio to
+    /// the phone speaker. Phone-mic mode can still play over A2DP; glasses-mic
+    /// mode uses the bidirectional HFP profile when available.
+    static func audioSessionOptions(usePhoneMic: Bool) -> AVAudioSession.CategoryOptions {
+        AudioSessionPolicy.liveTranslate(usePhoneMic: usePhoneMic).options
+    }
+
+    static func audioSessionConfiguration(usePhoneMic: Bool) -> AudioSessionConfiguration {
+        AudioSessionPolicy.liveTranslate(usePhoneMic: usePhoneMic)
+    }
+
+    /// Reassert the duplex category immediately before real output starts.
+    /// This repairs cases where another feature left the global session in
+    /// SoloAmbient/Default, while retaining the input selected for this
+    /// translation session.  It intentionally never switches to `.playback`
+    /// or stops the recording engine.
+    private func ensureDuplexAudioSessionForPlayback() -> Bool {
+        guard audioOutputEnabled else { return false }
+
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            let configuration = AudioSessionPolicy.liveTranslate(usePhoneMic: usePhoneMic)
+            try audioSession.setCategory(
+                configuration.category,
+                mode: configuration.mode,
+                options: configuration.options
+            )
+            try audioSession.setActive(true)
+
+            let preferredInput = audioSession.availableInputs?.first {
+                $0.uid == preferredInputUID
+            } ?? audioSession.availableInputs?.first {
+                usePhoneMic ? $0.portType == .builtInMic : $0.portType == .bluetoothHFP
+            }
+            if let preferredInput {
+                preferredInputUID = preferredInput.uid
+                try audioSession.setPreferredInput(preferredInput)
+            }
+            ownsAudioSession = true
+            logAudioRoute(audioSession, reason: "playback_activated")
+            return true
+        } catch {
+            print("⚠️ [Translate] 激活播放音频会话失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func releaseAudioSession() {
+        guard ownsAudioSession else { return }
+        do {
+            try AVAudioSession.sharedInstance().setPreferredInput(nil)
+        } catch {
+            print("⚠️ [Translate] 重置音频输入失败: \(error.localizedDescription)")
+        }
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false,
+                options: [.notifyOthersOnDeactivation]
+            )
+        } catch {
+            print("⚠️ [Translate] 释放音频会话失败: \(error.localizedDescription)")
+        }
+        ownsAudioSession = false
+        preferredInputUID = nil
+    }
+
+    private func observeAudioRouteChanges() {
+        let session = AVAudioSession.sharedInstance()
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: session,
+            queue: nil
+        ) { [weak self] notification in
+            // AVAudioSession posts route changes off the main thread.  Keep
+            // all state and engine interaction on the service's main queue.
+            DispatchQueue.main.async { [weak self] in
+                self?.handleAudioRouteChange(notification)
+            }
+        }
+    }
+
+    private func handleAudioRouteChange(_ notification: Notification) {
+        guard ownsAudioSession else { return }
+        let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)
+            .flatMap { AVAudioSession.RouteChangeReason(rawValue: $0.uintValue) }
+        let reasonText = reason.map { String(describing: $0) } ?? "unknown"
+        let session = AVAudioSession.sharedInstance()
+        logAudioRoute(session, reason: "route_changed_\(reasonText)")
+
+        guard isRecording || isPlaybackEngineRunning else { return }
+        do {
+            // Do not call overrideOutputAudioPort or blindly reselect a
+            // route.  iOS will choose a valid replacement after disconnect;
+            // reactivation is enough to recover from an interrupted session.
+            try session.setActive(true)
+            logAudioRoute(session, reason: "route_reactivated")
+        } catch {
+            print("⚠️ [Translate] 路由变化后恢复音频会话失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// Route diagnostics intentionally contain device types only.  Never log
+    /// transcript, audio, API key, or other payload data here.
+    private func logAudioRoute(_ session: AVAudioSession, reason: String) {
+        let inputs = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+        let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        print("🔊 [Translate] 音频路由 reason=\(reason) category=\(session.category.rawValue) mode=\(session.mode.rawValue) input=\(inputs.isEmpty ? "none" : inputs) output=\(outputs.isEmpty ? "none" : outputs)")
     }
 
     func stopRecording() {
@@ -536,12 +735,13 @@ class LiveTranslateService: NSObject {
         guard let data = jsonString.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = json["type"] as? String else {
-            print("⚠️ [Translate] 收到无法解析的消息: \(jsonString.prefix(200))")
+            // Never echo a malformed payload: realtime packets can contain
+            // audio/base64 or transcript text.
+            print("⚠️ [Translate] 收到无法解析的消息")
             return
         }
 
-        // 打印所有收到的事件类型
-        print("📥 [Translate] 收到事件: \(type)")
+        logServerEvent(type: type, json: json)
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -556,7 +756,29 @@ class LiveTranslateService: NSObject {
 
             case TranslateServerEvent.inputAudioBufferSpeechStarted.rawValue:
                 self.hasSentImageForSpeechTurn = false
-                self.onSpeechStarted?()
+                self.onSpeechStarted?(json["item_id"] as? String)
+
+            case TranslateServerEvent.inputAudioBufferSpeechStopped.rawValue:
+                self.onSpeechStopped?(json["item_id"] as? String)
+
+            case TranslateServerEvent.responseCreated.rawValue:
+                let responseID = (json["response"] as? [String: Any])?["id"] as? String
+                    ?? json["response_id"] as? String
+                if let responseID {
+                    if self.audioOutputEnabled {
+                        self.audioQueue.register(responseID: responseID)
+                    }
+                    self.onResponseStarted?(responseID)
+                }
+
+            case TranslateServerEvent.responseOutputItemAdded.rawValue,
+                 TranslateServerEvent.responseOutputItemDone.rawValue:
+                let responseID = (json["response_id"] as? String)
+                    ?? ((json["response"] as? [String: Any])?["id"] as? String)
+                guard let responseID,
+                      let item = json["item"] as? [String: Any],
+                      let responseItemID = item["id"] as? String else { return }
+                self.onResponseItem?(responseID, responseItemID)
 
             case TranslateServerEvent.conversationItemCreated.rawValue:
                 guard let sourceItemID = json["previous_item_id"] as? String,
@@ -623,7 +845,7 @@ class LiveTranslateService: NSObject {
                 self.onTranslation?(TranslateTextEvent(
                     responseID: responseID,
                     itemID: json["item_id"] as? String,
-                    confirmedText: json["text"] as? String ?? "",
+                    confirmedText: (json["text"] as? String) ?? (json["transcript"] as? String) ?? "",
                     pendingText: "",
                     isFinal: true
                 ))
@@ -639,6 +861,11 @@ class LiveTranslateService: NSObject {
                 if let responseID = json["response_id"] as? String {
                     self.markAudioResponseFinished(responseID)
                 }
+
+            case TranslateServerEvent.responseDone.rawValue:
+                let responseID = (json["response"] as? [String: Any])?["id"] as? String
+                    ?? json["response_id"] as? String
+                if let responseID { self.onResponseFinished?(responseID) }
 
             case TranslateServerEvent.sessionFinished.rawValue:
                 self.hasReceivedSessionFinished = true
@@ -661,16 +888,29 @@ class LiveTranslateService: NSObject {
     // MARK: - Audio Playback
 
     private func appendAudioChunk(_ audioData: Data, responseID: String) {
+        guard audioOutputEnabled else {
+            return
+        }
         audioQueue.append(audioData, responseID: responseID)
         publishPlaybackState()
     }
 
     private func markAudioResponseFinished(_ responseID: String) {
+        // A late audio.done can arrive after the user has switched to
+        // text-only output. Do not recreate an empty queue entry, otherwise
+        // session finalization would wait forever for playback that is
+        // intentionally disabled.
+        guard audioOutputEnabled else { return }
         audioQueue.markServerFinished(responseID)
         playNextResponseIfReady()
     }
 
     private func playNextResponseIfReady() {
+        guard audioOutputEnabled else {
+            publishPlaybackState()
+            completeFinishIfReady()
+            return
+        }
         guard let response = audioQueue.beginNextIfReady() else {
             publishPlaybackState()
             completeFinishIfReady()
@@ -680,6 +920,16 @@ class LiveTranslateService: NSObject {
         let responseID = response.responseID
         publishPlaybackState()
 
+        guard ensureDuplexAudioSessionForPlayback() else {
+            completePlayback(responseID)
+            return
+        }
+
+        if !isPlaybackEngineRunning && !startPlaybackEngine() {
+            completePlayback(responseID)
+            return
+        }
+
         guard let playerNode = playerNode,
               let playbackFormat = playbackFormat else {
             completePlayback(responseID)
@@ -688,11 +938,6 @@ class LiveTranslateService: NSObject {
 
         guard !response.data.isEmpty,
               let pcmBuffer = createPCMBuffer(from: response.data, format: playbackFormat) else {
-            completePlayback(responseID)
-            return
-        }
-
-        if !isPlaybackEngineRunning && !startPlaybackEngine() {
             completePlayback(responseID)
             return
         }
@@ -715,11 +960,15 @@ class LiveTranslateService: NSObject {
     }
 
     private func cancelPlaybackQueue() {
+        clearPlaybackQueue()
+        completeFinishIfReady(force: true)
+    }
+
+    private func clearPlaybackQueue() {
         playerNode?.stop()
         playerNode?.reset()
         audioQueue.reset()
         publishPlaybackState()
-        completeFinishIfReady(force: true)
     }
 
     private func publishPlaybackState() {
@@ -762,6 +1011,36 @@ class LiveTranslateService: NSObject {
     }
 
     // MARK: - Helpers
+
+    /// Logs only event metadata needed to diagnose turn association.  Never
+    /// include packet bodies, transcripts, audio, or authorization material.
+    private func logServerEvent(type: String, json: [String: Any]) {
+        var metadata = ["type=\(type)"]
+        if let eventID = json["event_id"] as? String {
+            metadata.append("event_id=\(eventID)")
+        }
+        let nestedResponseID = (json["response"] as? [String: Any])?["id"] as? String
+        if let responseID = (json["response_id"] as? String) ?? nestedResponseID {
+            metadata.append("response_id=\(responseID)")
+        }
+        if let itemID = json["item_id"] as? String {
+            metadata.append("item_id=\(itemID)")
+        } else if let itemID = (json["item"] as? [String: Any])?["id"] as? String {
+            metadata.append("item_id=\(itemID)")
+        }
+        if let previousItemID = json["previous_item_id"] as? String {
+            metadata.append("previous_item_id=\(previousItemID)")
+        }
+        if let status = (json["response"] as? [String: Any])?["status"] as? String {
+            metadata.append("status=\(status)")
+        }
+        let entry = metadata.joined(separator: " ")
+        diagnosticEventLog.append(entry)
+        if diagnosticEventLog.count > diagnosticEventLogCapacity {
+            diagnosticEventLog.removeFirst(diagnosticEventLog.count - diagnosticEventLogCapacity)
+        }
+        print("📥 [Translate] \(entry)")
+    }
 
     private func generateEventId() -> String {
         eventIdCounter += 1

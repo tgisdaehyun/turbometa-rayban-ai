@@ -54,19 +54,27 @@ class GeminiLiveService: NSObject {
     private var isRecording = false
     private var hasAudioBeenSent = false
     private var isSessionConfigured = false
+    private var ownsAudioSession = false
+    private var routeChangeObserver: NSObjectProtocol?
 
     init(apiKey: String, model: String? = nil) {
         self.apiKey = apiKey
         self.model = model ?? "gemini-2.0-flash-exp"
         super.init()
         setupAudioEngine()
+        observeAudioRouteChanges()
+    }
+
+    deinit {
+        if let routeChangeObserver {
+            NotificationCenter.default.removeObserver(routeChangeObserver)
+        }
     }
 
     // MARK: - Audio Engine Setup
 
     private func setupAudioEngine() {
         audioEngine = AVAudioEngine()
-        setupPlaybackEngine()
     }
 
     private func setupPlaybackEngine() {
@@ -85,21 +93,38 @@ class GeminiLiveService: NSObject {
         print("✅ [Gemini] 播放引擎初始化完成")
     }
 
-    private func configureAudioSession() {
+    @discardableResult
+    private func configureAudioSession() -> Bool {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker])
+            let configuration = AudioSessionPolicy.glassesDuplex
+            try audioSession.setCategory(
+                configuration.category,
+                mode: configuration.mode,
+                options: configuration.options
+            )
             try audioSession.setActive(true, options: [.notifyOthersOnDeactivation])
+            ownsAudioSession = true
+            logAudioRoute(audioSession, reason: "duplex_activated")
+            return true
         } catch {
-            print("⚠️ [Gemini] Audio session 配置失败: \(error)")
+            print("⚠️ [Gemini] Audio session 配置失败: \(error.localizedDescription)")
+            return false
         }
     }
 
     private func startPlaybackEngine() {
-        guard let playbackEngine = playbackEngine, !isPlaybackEngineRunning else { return }
+        guard !isPlaybackEngineRunning else { return }
+
+        // Do not prepare an output engine merely by entering Live AI; delay
+        // it until the first audio response is actually ready to play.
+        if playbackEngine == nil || playerNode == nil {
+            setupPlaybackEngine()
+        }
+        guard let playbackEngine = playbackEngine else { return }
 
         do {
-            configureAudioSession()
+            guard configureAudioSession() else { return }
             try playbackEngine.start()
             isPlaybackEngineRunning = true
             print("▶️ [Gemini] 播放引擎已启动")
@@ -151,7 +176,58 @@ class GeminiLiveService: NSObject {
         urlSession = nil
         stopRecording()
         stopPlaybackEngine()
+        releaseAudioSession()
         isSessionConfigured = false
+    }
+
+    private func releaseAudioSession() {
+        guard ownsAudioSession else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false,
+                options: [.notifyOthersOnDeactivation]
+            )
+        } catch {
+            print("⚠️ [Gemini] 释放音频会话失败: \(error.localizedDescription)")
+        }
+        ownsAudioSession = false
+    }
+
+    private func observeAudioRouteChanges() {
+        let session = AVAudioSession.sharedInstance()
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: session,
+            queue: nil
+        ) { [weak self] notification in
+            DispatchQueue.main.async { [weak self] in
+                self?.handleAudioRouteChange(notification)
+            }
+        }
+    }
+
+    private func handleAudioRouteChange(_ notification: Notification) {
+        guard ownsAudioSession else { return }
+        let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)
+            .map { AVAudioSession.RouteChangeReason(rawValue: $0.uintValue) }
+            .map { String(describing: $0) } ?? "unknown"
+        let session = AVAudioSession.sharedInstance()
+        logAudioRoute(session, reason: "route_changed_\(reason)")
+        guard isRecording || isPlaybackEngineRunning else { return }
+        do {
+            // Do not force a speaker or Bluetooth route after a disconnect;
+            // the system route policy remains authoritative.
+            try session.setActive(true)
+            logAudioRoute(session, reason: "route_reactivated")
+        } catch {
+            print("⚠️ [Gemini] 路由变化后恢复音频会话失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func logAudioRoute(_ session: AVAudioSession, reason: String) {
+        let inputs = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+        let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        print("🔊 [Gemini] 音频路由 reason=\(reason) category=\(session.category.rawValue) mode=\(session.mode.rawValue) input=\(inputs.isEmpty ? "none" : inputs) output=\(outputs.isEmpty ? "none" : outputs)")
     }
 
     // MARK: - Session Configuration
@@ -226,7 +302,9 @@ class GeminiLiveService: NSObject {
                 engine.inputNode.removeTap(onBus: 0)
             }
 
-            configureAudioSession()
+            guard configureAudioSession() else {
+                return
+            }
 
             guard let engine = audioEngine else {
                 print("❌ [Gemini] 音频引擎未初始化")
@@ -252,6 +330,9 @@ class GeminiLiveService: NSObject {
             print("✅ [Gemini] 录音已启动")
 
         } catch {
+            audioEngine?.inputNode.removeTap(onBus: 0)
+            audioEngine?.stop()
+            releaseAudioSession()
             print("❌ [Gemini] 启动录音失败: \(error.localizedDescription)")
             onError?("Failed to start recording: \(error.localizedDescription)")
         }
@@ -541,15 +622,15 @@ class GeminiLiveService: NSObject {
     }
 
     private func playAudio(_ audioData: Data) {
-        guard let playerNode = playerNode,
-              let playbackAudioFormat else {
-            return
-        }
-
         if !isPlaybackEngineRunning {
             startPlaybackEngine()
-            playerNode.play()
-        } else if !playerNode.isPlaying {
+        }
+
+        guard isPlaybackEngineRunning,
+              let playerNode,
+              let playbackAudioFormat else { return }
+
+        if !playerNode.isPlaying {
             playerNode.play()
         }
 

@@ -290,7 +290,7 @@ class QuickVisionManager: ObservableObject {
 
         guard let streamViewModel = streamViewModel else {
             print("❌ [QuickVision] StreamViewModel not set")
-            tts.speak("识图功能未初始化，请先打开应用")
+            tts.speak("识图功能未初始化，请先打开应用", mode: .standalonePlayback)
             return
         }
 
@@ -303,13 +303,13 @@ class QuickVisionManager: ObservableObject {
         // 获取 API Key
         guard let apiKey = APIKeyManager.shared.getAPIKey(), !apiKey.isEmpty else {
             errorMessage = "请先在设置中配置 API Key"
-            tts.speak("请先在设置中配置 API Key")
+            tts.speak("请先在设置中配置 API Key", mode: .standalonePlayback)
             isProcessing = false
             return
         }
 
         // 播报开始
-        tts.speak("正在识别", apiKey: apiKey)
+        tts.speak("正在识别", apiKey: apiKey, mode: .standalonePlayback)
 
         // 获取提示词
         let prompt = customPrompt ?? QuickVisionModeManager.shared.getPrompt(for: mode)
@@ -373,7 +373,7 @@ class QuickVisionManager: ObservableObject {
             lastImage = photo
 
             // 5. 预配置 TTS 音频会话
-            tts.prepareAudioSession()
+            tts.prepareAudioSession(mode: .standalonePlayback)
 
             // 6. 立即停止视频流
             print("🛑 [QuickVision] Stopping stream after capture")
@@ -390,19 +390,19 @@ class QuickVisionManager: ObservableObject {
             saveToHistory(mode: mode, prompt: prompt, result: result, image: photo)
 
             // 10. TTS 播报结果
-            tts.speak(result, apiKey: apiKey)
+            tts.speak(result, apiKey: apiKey, mode: .standalonePlayback)
 
             print("✅ [QuickVision] Complete: \(result)")
 
         } catch let error as QuickVisionError {
             errorMessage = error.localizedDescription
             print("❌ [QuickVision] QuickVisionError: \(error)")
-            tts.speak(error.localizedDescription, apiKey: apiKey)
+            tts.speak(error.localizedDescription, apiKey: apiKey, mode: .standalonePlayback)
             await streamViewModel.stopSession()
         } catch {
             errorMessage = error.localizedDescription
             print("❌ [QuickVision] Error: \(error)")
-            tts.speak("识别失败，\(error.localizedDescription)", apiKey: apiKey)
+            tts.speak("识别失败，\(error.localizedDescription)", apiKey: apiKey, mode: .standalonePlayback)
             await streamViewModel.stopSession()
         }
 

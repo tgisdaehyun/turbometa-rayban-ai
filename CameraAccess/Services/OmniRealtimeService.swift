@@ -95,9 +95,6 @@ class OmniRealtimeService: NSObject {
     private func setupAudioEngine() {
         // Recording engine
         audioEngine = AVAudioEngine()
-
-        // Playback engine (separate from recording)
-        setupPlaybackEngine()
     }
 
     private func setupPlaybackEngine() {
@@ -122,7 +119,14 @@ class OmniRealtimeService: NSObject {
     }
 
     private func startPlaybackEngine() {
-        guard let playbackEngine = playbackEngine, !isPlaybackEngineRunning else { return }
+        guard !isPlaybackEngineRunning else { return }
+
+        // Entering Live AI should not prepare an output graph and renegotiate
+        // the user's current route. Build it only for actual response audio.
+        if playbackEngine == nil || playerNode == nil {
+            setupPlaybackEngine()
+        }
+        guard let playbackEngine else { return }
 
         do {
             try playbackEngine.start()
@@ -504,20 +508,18 @@ class OmniRealtimeService: NSObject {
     // MARK: - Audio Playback (AVAudioEngine + AVAudioPlayerNode)
 
     private func playAudio(_ audioData: Data) {
-        guard let playerNode = playerNode,
-              let playbackFormat = playbackFormat else {
-            return
-        }
-
         // Start playback engine if not running
         if !isPlaybackEngineRunning {
             startPlaybackEngine()
+        }
+
+        guard isPlaybackEngineRunning,
+              let playerNode,
+              let playbackFormat else { return }
+
+        // 确保 playerNode 在运行
+        if !playerNode.isPlaying {
             playerNode.play()
-        } else {
-            // 确保 playerNode 在运行
-            if !playerNode.isPlaying {
-                playerNode.play()
-            }
         }
 
         // Convert PCM16 Data to Float32 AVAudioPCMBuffer

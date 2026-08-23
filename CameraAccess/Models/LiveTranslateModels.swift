@@ -196,6 +196,84 @@ struct TranslateRecord: Codable, Identifiable {
     }
 }
 
+// MARK: - 翻译会话
+
+/// A group of bilingual turns produced by one recording session.
+///
+/// `TranslateRecord.sessionID` was added after the first version of history
+/// storage. The builder below intentionally keeps records without a session
+/// ID as one-record sessions so old history remains visible and deletable.
+struct TranslationSession: Identifiable {
+    let id: UUID
+    let records: [TranslateRecord]
+
+    var startDate: Date { records.first?.timestamp ?? .distantPast }
+    var endDate: Date { records.last?.timestamp ?? startDate }
+    var turnCount: Int { records.count }
+
+    var previewText: String {
+        records.lazy
+            .map(\.translatedText)
+            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+            ?? ""
+    }
+
+    var hasMixedLanguageDirections: Bool {
+        Set(records.map {
+            "\($0.sourceLanguage.rawValue)->\($0.targetLanguage.rawValue)"
+        }).count > 1
+    }
+}
+
+enum TranslationSessionBuilder {
+    /// Groups records by their business session and applies stable ordering.
+    /// Records written before `sessionID` existed intentionally do not share a
+    /// synthetic session, because there is no safe way to infer boundaries.
+    static func group(records: [TranslateRecord]) -> [TranslationSession] {
+        var grouped: [String: (id: UUID, records: [TranslateRecord])] = [:]
+
+        for record in records {
+            let key: String
+            let sessionID: UUID
+            if let existingSessionID = record.sessionID {
+                key = "session:\(existingSessionID.uuidString)"
+                sessionID = existingSessionID
+            } else {
+                key = "legacy:\(record.id.uuidString)"
+                sessionID = record.id
+            }
+
+            if grouped[key] == nil {
+                grouped[key] = (sessionID, [])
+            }
+            var group = grouped[key]!
+            group.records.append(record)
+            grouped[key] = group
+        }
+
+        return grouped.values
+            .map { value in
+                TranslationSession(
+                    id: value.id,
+                    records: value.records.sorted(by: Self.recordAscending)
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.endDate != rhs.endDate {
+                    return lhs.endDate > rhs.endDate
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+    }
+
+    private static func recordAscending(_ lhs: TranslateRecord, _ rhs: TranslateRecord) -> Bool {
+        if lhs.timestamp != rhs.timestamp {
+            return lhs.timestamp < rhs.timestamp
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
 // MARK: - Structured Realtime Events
 
 struct TranslateSourceTranscriptEvent: Equatable {
@@ -222,6 +300,21 @@ struct TranslateTextEvent: Equatable {
 }
 
 struct TranslationTurnSnapshot: Identifiable, Equatable {
+    let id: UUID
+    let sourceItemID: String?
+    let responseID: String?
+    let originalText: String
+    let translatedText: String
+    let isSourceFinal: Bool
+    let isTranslationFinal: Bool
+    /// Creation order controls source-card display only. It is intentionally
+    /// never used to associate or persist a bilingual record.
+    let creationIndex: Int
+}
+
+/// A coordinator snapshot is deliberately richer than what the live list
+/// needs. SwiftUI never renders raw coordinator snapshots directly.
+struct TranslationDisplayTurn: Identifiable, Equatable {
     let id: UUID
     let sourceItemID: String?
     let responseID: String?
@@ -259,16 +352,24 @@ struct TranslationAudioQueue {
         max(0, responseOrder.count - (activeResponseID == nil ? 0 : 1))
     }
 
+    /// Registers the server's response lifecycle order before audio chunks
+    /// arrive. This keeps playback order independent from which response's
+    /// first PCM packet happens to reach the client first.
+    mutating func register(responseID: String) {
+        guard !responseID.isEmpty,
+              !completedResponseIDs.contains(responseID),
+              responses[responseID] == nil else { return }
+        responses[responseID] = TranslationAudioResponse(
+            responseID: responseID,
+            data: Data(),
+            isServerFinished: false
+        )
+        responseOrder.append(responseID)
+    }
+
     mutating func append(_ data: Data, responseID: String) {
         guard !completedResponseIDs.contains(responseID) else { return }
-        if responses[responseID] == nil {
-            responses[responseID] = TranslationAudioResponse(
-                responseID: responseID,
-                data: Data(),
-                isServerFinished: false
-            )
-            responseOrder.append(responseID)
-        }
+        register(responseID: responseID)
         responses[responseID]?.data.append(data)
     }
 
@@ -327,11 +428,18 @@ struct TranslationAudioQueue {
     }
 }
 
-/// Pairs source-ASR and translated-response events using the server-provided
-/// item link, with stable arrival order as a fallback for older event streams.
+/// Pairs realtime source and translation events exclusively through the
+/// protocol's item graph:
+///
+///     response_id -> assistant item id -> previous_item_id (source item id)
+///
+/// The graph is intentionally independent from event arrival order. Every
+/// event is retained until the other side of the relationship arrives. No
+/// arrival ordering, timing, text similarity, or response ordering is allowed
+/// to associate two turns.
 struct TranslationTurnCoordinator {
     private struct SourceState {
-        var recordID = UUID()
+        let recordID: UUID
         let itemID: String
         let creationIndex: Int
         var text = ""
@@ -340,13 +448,12 @@ struct TranslationTurnCoordinator {
     }
 
     private struct ResponseState {
-        var recordID = UUID()
         let responseID: String
         let creationIndex: Int
-        var itemID: String?
-        var sourceItemID: String?
+        var assistantItemID: String?
         var text = ""
         var isFinal = false
+        var isResponseDone = false
         var timestamp = Date()
     }
 
@@ -354,10 +461,9 @@ struct TranslationTurnCoordinator {
     private(set) var sourceLanguage: TranslateLanguage
     private(set) var targetLanguage: TranslateLanguage
     private var sourceOrder: [String] = []
-    private var responseOrder: [String] = []
     private var sources: [String: SourceState] = [:]
     private var responses: [String: ResponseState] = [:]
-    private var sourceItemIDByResponseItemID: [String: String] = [:]
+    private var sourceItemIDByAssistantItemID: [String: String] = [:]
     private var nextCreationIndex = 0
 
     init(
@@ -375,48 +481,117 @@ struct TranslationTurnCoordinator {
         targetLanguage = target
     }
 
-    mutating func receiveSource(_ event: TranslateSourceTranscriptEvent) -> TranslationCoordinatorUpdate {
-        if sources[event.itemID] == nil {
-            sources[event.itemID] = SourceState(
-                itemID: event.itemID,
-                creationIndex: takeCreationIndex()
-            )
-            sourceOrder.append(event.itemID)
+    mutating func receiveSpeechStarted(itemID: String? = nil) -> TranslationCoordinatorUpdate {
+        if let itemID, !itemID.isEmpty {
+            ensureSource(itemID: itemID)
         }
-        sources[event.itemID]?.text = event.displayText
-        sources[event.itemID]?.isFinal = event.isFinal
-        reconcileRecordIDs()
+        return makeUpdate()
+    }
+
+    mutating func receiveSpeechStopped(itemID: String? = nil) -> TranslationCoordinatorUpdate {
+        // speech_stopped is a lifecycle hint only. The source transcription
+        // completed event remains the sole source-final signal.
+        _ = itemID
+        return makeUpdate()
+    }
+
+    mutating func receiveSource(_ event: TranslateSourceTranscriptEvent) -> TranslationCoordinatorUpdate {
+        guard !event.itemID.isEmpty else { return makeUpdate() }
+        let sourceID = ensureSource(itemID: event.itemID)
+        guard var source = sources[sourceID] else { return makeUpdate() }
+
+        // `text + stash` is a complete replacement snapshot. A final event
+        // must replace an interim value even when it is shorter.
+        if source.isFinal && !event.isFinal {
+            return makeUpdate()
+        }
+        source.text = event.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+        source.isFinal = source.isFinal || event.isFinal
+        source.timestamp = Date()
+        sources[sourceID] = source
         return makeUpdate()
     }
 
     mutating func receiveTranslation(_ event: TranslateTextEvent) -> TranslationCoordinatorUpdate {
-        if responses[event.responseID] == nil {
-            responses[event.responseID] = ResponseState(
-                responseID: event.responseID,
-                creationIndex: takeCreationIndex()
-            )
-            responseOrder.append(event.responseID)
+        guard !event.responseID.isEmpty else { return makeUpdate() }
+        ensureResponse(responseID: event.responseID)
+        guard var response = responses[event.responseID] else { return makeUpdate() }
+
+        if let itemID = event.itemID, !itemID.isEmpty {
+            response.assistantItemID = itemID
         }
-        responses[event.responseID]?.itemID = event.itemID
-        if let itemID = event.itemID {
-            responses[event.responseID]?.sourceItemID = sourceItemIDByResponseItemID[itemID]
+        if response.isFinal && !event.isFinal {
+            responses[event.responseID] = response
+            return makeUpdate()
         }
-        responses[event.responseID]?.text = event.displayText
-        responses[event.responseID]?.isFinal = event.isFinal
-        reconcileRecordIDs()
+        response.text = event.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+        response.isFinal = response.isFinal || event.isFinal
+        response.timestamp = Date()
+        responses[event.responseID] = response
         return makeUpdate()
     }
 
-    /// Associates the assistant output item with the source ASR item using
-    /// `conversation.item.created.previous_item_id`. This is authoritative;
-    /// arrival order is used only when the server omits the linkage event.
-    mutating func receiveLink(sourceItemID: String, responseItemID: String) -> TranslationCoordinatorUpdate {
-        sourceItemIDByResponseItemID[responseItemID] = sourceItemID
-        for responseID in responseOrder where responses[responseID]?.itemID == responseItemID {
-            responses[responseID]?.sourceItemID = sourceItemID
-        }
-        reconcileRecordIDs()
+    mutating func receiveResponseStarted(responseID: String) -> TranslationCoordinatorUpdate {
+        guard !responseID.isEmpty else { return makeUpdate() }
+        ensureResponse(responseID: responseID)
         return makeUpdate()
+    }
+
+    mutating func receiveResponseFinished(responseID: String) -> TranslationCoordinatorUpdate {
+        guard !responseID.isEmpty else { return makeUpdate() }
+        ensureResponse(responseID: responseID)
+        responses[responseID]?.isResponseDone = true
+        // response.done is not a transcript completion event. Do not modify
+        // `isFinal` here; audio_transcript.done/text.done owns that state.
+        return makeUpdate()
+    }
+
+    /// Connects a response id to its assistant output item. This event may
+    /// arrive before or after the conversation item link and transcript.
+    mutating func receiveResponseItem(responseID: String, itemID: String) -> TranslationCoordinatorUpdate {
+        guard !responseID.isEmpty, !itemID.isEmpty else { return makeUpdate() }
+        ensureResponse(responseID: responseID)
+        responses[responseID]?.assistantItemID = itemID
+        return makeUpdate()
+    }
+
+    /// Stores the authoritative assistant-item -> source-item relationship
+    /// carried by `conversation.item.created.previous_item_id`.
+    mutating func receiveLink(sourceItemID: String, responseItemID: String) -> TranslationCoordinatorUpdate {
+        guard !sourceItemID.isEmpty, !responseItemID.isEmpty else { return makeUpdate() }
+        _ = ensureSource(itemID: sourceItemID)
+        sourceItemIDByAssistantItemID[responseItemID] = sourceItemID
+        return makeUpdate()
+    }
+
+    /// A session can only persist fully linked, fully completed bilingual
+    /// turns. Unlinked responses are intentionally omitted from the update.
+    mutating func finalize() -> TranslationCoordinatorUpdate {
+        makeUpdate()
+    }
+
+    @discardableResult
+    private mutating func ensureSource(itemID: String) -> String {
+        guard let existing = sources[itemID] else {
+            let source = SourceState(
+                recordID: UUID(),
+                itemID: itemID,
+                creationIndex: takeCreationIndex()
+            )
+            sources[itemID] = source
+            sourceOrder.append(itemID)
+            return itemID
+        }
+        _ = existing
+        return itemID
+    }
+
+    private mutating func ensureResponse(responseID: String) {
+        guard responses[responseID] == nil else { return }
+        responses[responseID] = ResponseState(
+            responseID: responseID,
+            creationIndex: takeCreationIndex()
+        )
     }
 
     private mutating func takeCreationIndex() -> Int {
@@ -424,83 +599,69 @@ struct TranslationTurnCoordinator {
         return nextCreationIndex
     }
 
-    private mutating func reconcileRecordIDs() {
-        var claimedSourceIDs = Set(responses.values.compactMap(\.sourceItemID))
-        var unlinkedSourceIDs = sourceOrder.filter { !claimedSourceIDs.contains($0) }
-
-        for responseID in responseOrder where responses[responseID]?.sourceItemID == nil {
-            guard !unlinkedSourceIDs.isEmpty else { break }
-            let sourceID = unlinkedSourceIDs.removeFirst()
-            responses[responseID]?.sourceItemID = sourceID
-            claimedSourceIDs.insert(sourceID)
-        }
-
-        for responseID in responseOrder {
-            guard var response = responses[responseID],
-                  let sourceID = response.sourceItemID,
-                  var source = sources[sourceID] else { continue }
-            let stableID = source.creationIndex < response.creationIndex
-                ? source.recordID
-                : response.recordID
-            source.recordID = stableID
-            response.recordID = stableID
-            sources[sourceID] = source
-            responses[responseID] = response
-        }
+    private func linkedResponse(for sourceItemID: String) -> ResponseState? {
+        responses.values
+            .filter { response in
+                guard let assistantItemID = response.assistantItemID,
+                      let linkedSourceID = sourceItemIDByAssistantItemID[assistantItemID] else {
+                    return false
+                }
+                return linkedSourceID == sourceItemID
+            }
+            .sorted {
+                if $0.creationIndex != $1.creationIndex {
+                    return $0.creationIndex < $1.creationIndex
+                }
+                return $0.responseID < $1.responseID
+            }
+            .first
     }
 
     private func makeUpdate() -> TranslationCoordinatorUpdate {
         var snapshots: [TranslationTurnSnapshot] = []
         var records: [TranslateRecord] = []
-        var consumedResponseIDs = Set<String>()
 
         for sourceID in sourceOrder {
-            let source = sources[sourceID]
-            let response = responseOrder.compactMap { responses[$0] }.first {
-                $0.sourceItemID == sourceID
+            guard let source = sources[sourceID] else { continue }
+            let response = linkedResponse(for: sourceID)
+            // Never expose a translation-only card. A source card may remain
+            // provisional while the authoritative assistant link is pending.
+            guard !source.text.isEmpty else { continue }
+
+            let snapshot = TranslationTurnSnapshot(
+                id: source.recordID,
+                sourceItemID: source.itemID,
+                responseID: response?.responseID,
+                originalText: source.text,
+                translatedText: response?.text ?? "",
+                isSourceFinal: source.isFinal,
+                isTranslationFinal: response?.isFinal ?? false,
+                creationIndex: source.creationIndex
+            )
+            snapshots.append(snapshot)
+
+            guard let response,
+                  source.isFinal,
+                  response.isFinal,
+                  !source.text.isEmpty,
+                  !response.text.isEmpty else {
+                continue
             }
-            if let response { consumedResponseIDs.insert(response.responseID) }
-            appendTurn(source: source, response: response, snapshots: &snapshots, records: &records)
-        }
 
-        for responseID in responseOrder where !consumedResponseIDs.contains(responseID) {
-            appendTurn(source: nil, response: responses[responseID], snapshots: &snapshots, records: &records)
-        }
-
-        return TranslationCoordinatorUpdate(turns: snapshots, recordsToUpsert: records)
-    }
-
-    private func appendTurn(
-        source: SourceState?,
-        response: ResponseState?,
-        snapshots: inout [TranslationTurnSnapshot],
-        records: inout [TranslateRecord]
-    ) {
-        let recordID = response?.recordID ?? source?.recordID ?? UUID()
-        let snapshot = TranslationTurnSnapshot(
-            id: recordID,
-            sourceItemID: source?.itemID,
-            responseID: response?.responseID,
-            originalText: source?.text ?? "",
-            translatedText: response?.text ?? "",
-            isSourceFinal: source?.isFinal ?? false,
-            isTranslationFinal: response?.isFinal ?? false
-        )
-        snapshots.append(snapshot)
-
-        if let response, response.isFinal, !response.text.isEmpty {
             records.append(TranslateRecord(
-                id: recordID,
-                timestamp: source?.timestamp ?? response.timestamp,
+                id: source.recordID,
+                timestamp: max(source.timestamp, response.timestamp),
                 sessionID: sessionID,
-                sourceItemID: source?.itemID,
+                sourceItemID: source.itemID,
                 responseID: response.responseID,
                 sourceLanguage: sourceLanguage,
                 targetLanguage: targetLanguage,
-                originalText: source?.text ?? "",
+                originalText: source.text,
                 translatedText: response.text
             ))
         }
+
+        return TranslationCoordinatorUpdate(turns: snapshots, recordsToUpsert: records)
     }
 }
 
@@ -526,6 +687,7 @@ enum TranslateServerEvent: String {
     case responseOutputItemAdded = "response.output_item.added"
     case responseContentPartAdded = "response.content_part.added"
     case inputAudioBufferSpeechStarted = "input_audio_buffer.speech_started"
+    case inputAudioBufferSpeechStopped = "input_audio_buffer.speech_stopped"
     case sourceTranscriptText = "conversation.item.input_audio_transcription.text"
     case sourceTranscriptCompleted = "conversation.item.input_audio_transcription.completed"
     case sourceTranscriptFailed = "conversation.item.input_audio_transcription.failed"

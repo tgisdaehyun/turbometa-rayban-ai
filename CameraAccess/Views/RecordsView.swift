@@ -246,25 +246,256 @@ struct ConversationCell: View {
 // MARK: - Translation Records
 
 struct TranslationRecordsView: View {
+    @StateObject private var viewModel = TranslationHistoryViewModel()
+    @State private var selectedSession: TranslationSession?
+
     var body: some View {
-        ZStack {
-            AppColors.secondaryBackground
-                .ignoresSafeArea()
-
-            VStack(spacing: AppSpacing.lg) {
-                Image(systemName: "text.bubble")
-                    .font(.system(size: 64))
-                    .foregroundColor(AppColors.translate.opacity(0.6))
-
-                Text("暂无翻译记录")
-                    .font(AppTypography.title2)
-                    .foregroundColor(AppColors.textPrimary)
-
-                Text("功能即将上线")
-                    .font(AppTypography.subheadline)
-                    .foregroundColor(AppColors.textSecondary)
+        Group {
+            if viewModel.sessions.isEmpty {
+                translationEmptyState
+                    .frame(maxWidth: .infinity)
+            } else {
+                List {
+                    ForEach(viewModel.sessions) { session in
+                        TranslationSessionCell(session: session)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedSession = session
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    viewModel.delete(session: session)
+                                } label: {
+                                    Label("records.translation.delete".localized, systemImage: "trash")
+                                }
+                            }
+                            .listRowInsets(EdgeInsets(
+                                top: AppSpacing.sm,
+                                leading: AppSpacing.md,
+                                bottom: AppSpacing.sm,
+                                trailing: AppSpacing.md
+                            ))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
             }
         }
+        .background(AppColors.secondaryBackground.ignoresSafeArea())
+        .refreshable {
+            viewModel.load()
+        }
+        .onAppear {
+            viewModel.load()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .liveTranslateHistoryDidChange)) { _ in
+            viewModel.load()
+        }
+        .sheet(item: $selectedSession) { session in
+            TranslationSessionDetailView(session: session)
+        }
+    }
+
+    private var translationEmptyState: some View {
+        VStack(spacing: AppSpacing.lg) {
+            Image(systemName: "text.bubble")
+                .font(.system(size: 64))
+                .foregroundColor(AppColors.translate.opacity(0.6))
+
+            Text("records.translation.empty".localized)
+                .font(AppTypography.title2)
+                .foregroundColor(AppColors.textPrimary)
+
+            Text("records.translation.empty.hint".localized)
+                .font(AppTypography.subheadline)
+                .foregroundColor(AppColors.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, AppSpacing.xl)
+        }
+    }
+}
+
+// MARK: - Translation History View Model
+
+@MainActor
+final class TranslationHistoryViewModel: ObservableObject {
+    @Published private(set) var sessions: [TranslationSession] = []
+
+    private let storage: LiveTranslateHistoryStorage
+
+    init(storage: LiveTranslateHistoryStorage = .shared) {
+        self.storage = storage
+    }
+
+    func load() {
+        sessions = TranslationSessionBuilder.group(records: storage.loadAll())
+    }
+
+    func delete(session: TranslationSession) {
+        _ = storage.deleteRecords(ids: session.records.map(\.id))
+        load()
+    }
+}
+
+// MARK: - Translation Session Cell
+
+struct TranslationSessionCell: View {
+    let session: TranslationSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
+            HStack(alignment: .firstTextBaseline, spacing: AppSpacing.sm) {
+                Image(systemName: "text.bubble.fill")
+                    .foregroundColor(AppColors.translate)
+                    .font(AppTypography.headline)
+
+                Text(directionText)
+                    .font(AppTypography.headline)
+                    .foregroundColor(AppColors.textPrimary)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(AppTypography.caption)
+                    .foregroundColor(AppColors.textTertiary)
+            }
+
+            if !session.previewText.isEmpty {
+                Text(session.previewText)
+                    .font(AppTypography.subheadline)
+                    .foregroundColor(AppColors.textSecondary)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: AppSpacing.md) {
+                Label(session.startDate.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
+                Label(
+                    String(format: "records.translation.turnCount".localized, session.turnCount),
+                    systemImage: "text.quote"
+                )
+            }
+            .font(AppTypography.caption)
+            .foregroundColor(AppColors.textSecondary)
+        }
+        .padding(AppSpacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColors.tertiaryBackground)
+        .cornerRadius(AppCornerRadius.lg)
+        .shadow(color: AppShadow.small(), radius: 4, x: 0, y: 2)
+    }
+
+    private var directionText: String {
+        if session.hasMixedLanguageDirections {
+            return "records.translation.mixedDirection".localized
+        }
+        let directions = session.records.map {
+            "\($0.sourceLanguage.flag) \($0.sourceLanguage.displayName) → \($0.targetLanguage.flag) \($0.targetLanguage.displayName)"
+        }
+        return directions.first ?? ""
+    }
+}
+
+// MARK: - Translation Session Detail
+
+struct TranslationSessionDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    let session: TranslationSession
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppSpacing.lg) {
+                    sessionSummary
+
+                    LazyVStack(spacing: AppSpacing.md) {
+                        ForEach(session.records) { record in
+                            TranslationTurnDetailCell(record: record)
+                        }
+                    }
+                }
+                .padding(AppSpacing.md)
+            }
+            .background(AppColors.secondaryBackground.ignoresSafeArea())
+            .navigationTitle("records.translation.detail.title".localized)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("common.done".localized) {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private var sessionSummary: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
+            Text(directionText)
+                .font(AppTypography.headline)
+                .foregroundColor(AppColors.textPrimary)
+
+            Text(String(
+                format: "records.translation.detail.timeRange".localized,
+                session.startDate.formatted(date: .abbreviated, time: .shortened),
+                session.endDate.formatted(date: .abbreviated, time: .shortened)
+            ))
+            .font(AppTypography.caption)
+            .foregroundColor(AppColors.textSecondary)
+
+            Text(String(format: "records.translation.turnCount".localized, session.turnCount))
+                .font(AppTypography.caption)
+                .foregroundColor(AppColors.textSecondary)
+        }
+        .padding(AppSpacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColors.tertiaryBackground)
+        .cornerRadius(AppCornerRadius.lg)
+    }
+
+    private var directionText: String {
+        if session.hasMixedLanguageDirections {
+            return "records.translation.mixedDirection".localized
+        }
+        let directions = session.records.map {
+            "\($0.sourceLanguage.flag) \($0.sourceLanguage.displayName) → \($0.targetLanguage.flag) \($0.targetLanguage.displayName)"
+        }
+        return directions.first ?? ""
+    }
+}
+
+private struct TranslationTurnDetailCell: View {
+    let record: TranslateRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
+            HStack {
+                Text("\(record.sourceLanguage.flag) → \(record.targetLanguage.flag)")
+                    .font(AppTypography.caption)
+                    .foregroundColor(AppColors.textSecondary)
+                Spacer()
+                Text(record.timestamp.formatted(date: .omitted, time: .shortened))
+                    .font(AppTypography.caption)
+                    .foregroundColor(AppColors.textTertiary)
+            }
+
+            if !record.originalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(record.originalText)
+                    .font(AppTypography.body)
+                    .foregroundColor(AppColors.textSecondary)
+            }
+
+            if !record.translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(record.translatedText)
+                    .font(AppTypography.headline)
+                    .foregroundColor(AppColors.textPrimary)
+            }
+        }
+        .padding(AppSpacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColors.tertiaryBackground)
+        .cornerRadius(AppCornerRadius.lg)
     }
 }
 

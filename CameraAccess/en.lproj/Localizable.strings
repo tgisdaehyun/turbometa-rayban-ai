@@ -377,6 +377,15 @@
 "livetranslate.vision.off" = "Off; no frames are read or uploaded";
 "livetranslate.vision.on" = "Uploads 1 latest glasses frame per speech turn";
 
+// Translation session history
+"records.translation.empty" = "No translation sessions";
+"records.translation.empty.hint" = "Completed Live Translate sessions will appear here";
+"records.translation.delete" = "Delete session";
+"records.translation.mixedDirection" = "Multiple language directions";
+"records.translation.turnCount" = "%d turns";
+"records.translation.detail.title" = "Translation Details";
+"records.translation.detail.timeRange" = "%@ – %@";
+
 // Live Translate Settings
 "livetranslate.settings.title" = "Translation Settings";
 "livetranslate.settings.sourceLanguage" = "Source Language";

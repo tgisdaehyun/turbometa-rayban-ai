@@ -34,11 +34,21 @@ struct LiveTranslateView: View {
 
                 // 翻译结果区域
                 translationArea
-
-                // 控制栏
-                controlBar
             }
-            .padding()
+            // Float the microphone above the list so controls do not reduce the
+            // scroll viewport. The list reserves matching bottom content space.
+            .overlay(alignment: .bottom) {
+                controlBar
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.black.opacity(0), Color.black.opacity(0.92)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .ignoresSafeArea(edges: .bottom)
+                    )
+            }
         }
         .task {
             // Entering with vision off releases a camera session left by a
@@ -111,7 +121,8 @@ struct LiveTranslateView: View {
                     .foregroundColor(.white.opacity(0.8))
             }
         }
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     private var connectionIndicator: some View {
@@ -157,7 +168,8 @@ struct LiveTranslateView: View {
                 showSettings = true
             }
         }
-        .padding(.vertical, 16)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
     }
 
     private func languageButton(language: TranslateLanguage, label: String, action: @escaping () -> Void) -> some View {
@@ -174,8 +186,8 @@ struct LiveTranslateView: View {
                         .foregroundColor(.white)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color.white.opacity(0.1))
@@ -189,8 +201,8 @@ struct LiveTranslateView: View {
         ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
-                    LazyVStack(spacing: 12) {
-                        if viewModel.translationHistory.isEmpty && viewModel.activeTurns.isEmpty {
+                    LazyVStack(spacing: 14) {
+                        if viewModel.currentSessionRecords.isEmpty && viewModel.activeTurns.isEmpty {
                             Text("livetranslate.placeholder".localized)
                                 .font(AppTypography.body)
                                 .foregroundColor(.white.opacity(0.4))
@@ -198,7 +210,7 @@ struct LiveTranslateView: View {
                                 .padding(.vertical, 48)
                         }
 
-                        ForEach(viewModel.translationHistory) { record in
+                        ForEach(viewModel.currentSessionRecords) { record in
                             translationCard(
                                 id: record.id,
                                 original: record.originalText,
@@ -222,14 +234,15 @@ struct LiveTranslateView: View {
                             )
                         }
 
-                        Color.clear.frame(height: 1).id("translation-bottom")
+                        Color.clear.frame(height: 116).id("translation-bottom")
                     }
-                    .padding(12)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 10)
                 }
                 .simultaneousGesture(DragGesture().onChanged { _ in
                     shouldAutoScroll = false
                 })
-                .onChange(of: viewModel.translationHistory.count) { _, _ in
+                .onChange(of: viewModel.currentSessionRecords.count) { _, _ in
                     scrollToLatestIfNeeded(proxy)
                 }
                 .onChange(of: viewModel.activeTurns) { _, _ in
@@ -258,7 +271,7 @@ struct LiveTranslateView: View {
                 }
             }
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 6)
         .frame(maxHeight: .infinity)
     }
 
@@ -282,18 +295,20 @@ struct LiveTranslateView: View {
 
             if !original.isEmpty {
                 Text(original)
-                    .font(AppTypography.body)
+                    .font(.system(size: 18, weight: .regular, design: .rounded))
                     .foregroundColor(.white.opacity(0.65))
+                    .lineSpacing(4)
             }
             if !translated.isEmpty {
                 Text(translated)
-                    .font(AppTypography.headline)
+                    .font(.system(size: 21, weight: .semibold, design: .rounded))
                     .foregroundColor(.white)
+                    .lineSpacing(5)
             }
         }
-        .padding(14)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(isStreaming ? 0.14 : 0.08)))
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(isStreaming ? 0.14 : 0.08)))
         .id(id)
     }
 
@@ -319,16 +334,16 @@ struct LiveTranslateView: View {
             .foregroundColor(.white)
         }
         .tint(.green)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.08)))
-        .padding(.horizontal)
+        .padding(.horizontal, 8)
     }
 
     // MARK: - Control Bar
 
     private var controlBar: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 8) {
             // 录音状态提示
             if viewModel.isRecording {
                 HStack(spacing: 8) {
@@ -376,7 +391,7 @@ struct LiveTranslateView: View {
             .disabled(!viewModel.isConnected || viewModel.isFinalizing)
             .opacity(viewModel.isConnected && !viewModel.isFinalizing ? 1.0 : 0.5)
         }
-        .padding(.bottom, 20)
+        .padding(.bottom, 10)
     }
 
     // MARK: - Video Background

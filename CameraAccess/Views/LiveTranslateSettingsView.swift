@@ -130,7 +130,7 @@ struct LiveTranslateSettingsView: View {
                 }
 
                 // 历史记录
-                if !viewModel.translationHistory.isEmpty {
+                if viewModel.historyRecordCount > 0 {
                     Section {
                         Button(role: .destructive) {
                             showClearHistoryConfirmation = true
@@ -143,7 +143,7 @@ struct LiveTranslateSettingsView: View {
                     } header: {
                         Text("livetranslate.settings.history".localized)
                     } footer: {
-                        Text(String(format: "livetranslate.settings.historyCount".localized, viewModel.translationHistory.count))
+                        Text(String(format: "livetranslate.settings.historyCount".localized, viewModel.historyRecordCount))
                     }
                 }
             }

@@ -196,7 +196,7 @@ struct QuickVisionView: View {
 
                         // 重新播报按钮
                         Button {
-                            tts.speak(result)
+                            tts.speak(result, mode: .standalonePlayback)
                         } label: {
                             Image(systemName: tts.isSpeaking ? "speaker.wave.3.fill" : "speaker.wave.2")
                                 .foregroundColor(.white)

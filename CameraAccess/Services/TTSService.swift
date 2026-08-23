@@ -7,6 +7,14 @@
 import AVFoundation
 import Foundation
 
+enum TTSPlaybackMode: Equatable {
+    /// Preserve an already active play-and-record session.  This is used by
+    /// Live AI status/error prompts so TTS cannot steal the glasses route.
+    case automatic
+    /// Use a standalone output-only session (Quick Vision and manual TTS).
+    case standalonePlayback
+}
+
 @MainActor
 class TTSService: NSObject, ObservableObject {
     static let shared = TTSService()
@@ -35,10 +43,20 @@ class TTSService: NSObject, ObservableObject {
 
     private var currentTask: Task<Void, Never>?
     private var systemSynthesizer: AVSpeechSynthesizer?
+    private var ownsAudioSession = false
+    private var routeChangeObserver: NSObjectProtocol?
+    private var pendingPlaybackMode: TTSPlaybackMode = .automatic
+    private var activePlaybackMode: TTSPlaybackMode = .automatic
 
     private override init() {
         super.init()
-        setupPlaybackEngine()
+        observeAudioRouteChanges()
+    }
+
+    deinit {
+        if let routeChangeObserver {
+            NotificationCenter.default.removeObserver(routeChangeObserver)
+        }
     }
 
     // MARK: - Audio Engine Setup (和 OmniRealtimeService 一样)
@@ -61,37 +79,60 @@ class TTSService: NSObject, ObservableObject {
         print("✅ [TTS] 播放引擎初始化完成: Float32 @ 24kHz")
     }
 
-    /// 配置音频会话（需要在启动播放引擎之前调用）
-    private func configureAudioSession() {
+    /// 配置音频会话（需要在启动播放引擎之前调用）。 Automatic 模式
+    /// 会复用正在进行的双工会话；只有没有双工会话时才切换到 playback。
+    @discardableResult
+    private func configureAudioSession(for mode: TTSPlaybackMode) -> Bool {
         do {
             let audioSession = AVAudioSession.sharedInstance()
 
-            // 检查当前会话状态
-            print("🔊 [TTS] 当前音频会话: category=\(audioSession.category.rawValue), mode=\(audioSession.mode.rawValue)")
+            if mode == .automatic && audioSession.category == .playAndRecord {
+                // Live AI/Realtime Translate owns the duplex session.  Do not
+                // call setCategory here; reactivating it is enough for a
+                // prompt to share the current Bluetooth route.
+                try audioSession.setActive(true)
+                ownsAudioSession = false
+                logAudioRoute(audioSession, reason: "preserved_duplex")
+                return true
+            }
 
-            // 只在需要时配置，避免与现有会话冲突
-            // 使用和 OmniRealtimeService 完全一样的设置（不要 defaultToSpeaker）
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
-            try audioSession.setPreferredSampleRate(24000)
+            let configuration = AudioSessionPolicy.standalonePlayback
+            try audioSession.setCategory(
+                configuration.category,
+                mode: configuration.mode,
+                options: configuration.options
+            )
             try audioSession.setActive(true, options: [.notifyOthersOnDeactivation])
-            print("✅ [TTS] Audio session 已配置")
+            ownsAudioSession = true
+            logAudioRoute(audioSession, reason: "standalone_playback")
+            return true
         } catch {
-            print("⚠️ [TTS] Audio session 配置失败: \(error), 继续尝试播放...")
-            // 不要抛出错误，尝试使用现有会话播放
+            print("⚠️ [TTS] Audio session 配置失败: \(error.localizedDescription)")
+            return false
         }
     }
 
-    private func startPlaybackEngine() {
-        guard let playbackEngine = playbackEngine, !isPlaybackEngineRunning else { return }
+    @discardableResult
+    private func startPlaybackEngine(mode: TTSPlaybackMode? = nil) -> Bool {
+        // Keep screen entry route-neutral. Constructing and preparing an
+        // output engine can itself make iOS renegotiate the current route.
+        if playbackEngine == nil || playerNode == nil {
+            setupPlaybackEngine()
+        }
+        guard let playbackEngine = playbackEngine else { return false }
+        if isPlaybackEngineRunning { return true }
 
-        configureAudioSession()
+        let mode = mode ?? activePlaybackMode
+        guard configureAudioSession(for: mode) else { return false }
         do {
             try playbackEngine.start()
             playerNode?.play()
             isPlaybackEngineRunning = true
             print("✅ [TTS] 播放引擎已启动")
+            return true
         } catch {
             print("❌ [TTS] 播放引擎启动失败: \(error)")
+            return false
         }
     }
 
@@ -100,6 +141,19 @@ class TTSService: NSObject, ObservableObject {
         playerNode?.reset()
         playbackEngine?.stop()
         isPlaybackEngineRunning = false
+    }
+
+    private func releaseAudioSession() {
+        guard ownsAudioSession else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false,
+                options: [.notifyOthersOnDeactivation]
+            )
+        } catch {
+            print("⚠️ [TTS] 释放音频会话失败: \(error.localizedDescription)")
+        }
+        ownsAudioSession = false
     }
 
     // MARK: - API Request Models
@@ -117,16 +171,24 @@ class TTSService: NSObject, ObservableObject {
 
     // MARK: - Public Methods
 
-    /// 预配置音频会话（在停止流之前调用）
-    func prepareAudioSession() {
-        configureAudioSession()
-        print("🔊 [TTS] 音频会话已预配置")
+    /// 记录下一次播报的会话模式。在 Quick Vision 停止视频流前调用时，
+    /// 不会提前抢占仍由视频/录音链路使用的音频会话。
+    func prepareAudioSession(mode: TTSPlaybackMode = .automatic) {
+        pendingPlaybackMode = mode
+        if mode == .automatic {
+            _ = configureAudioSession(for: mode)
+        }
+        print("🔊 [TTS] 音频会话模式已准备: \(String(describing: mode))")
     }
 
     /// 播报文本
     /// - 阿里云 API：使用阿里云 qwen3-tts-flash
     /// - OpenRouter API：使用系统 TTS
-    func speak(_ text: String, apiKey: String? = nil) {
+    func speak(_ text: String, apiKey: String? = nil, mode: TTSPlaybackMode? = nil) {
+        let playbackMode = mode ?? pendingPlaybackMode
+        pendingPlaybackMode = .automatic
+        activePlaybackMode = playbackMode
+
         // 取消之前的任务
         currentTask?.cancel()
         stop()
@@ -136,7 +198,7 @@ class TTSService: NSObject, ObservableObject {
             print("🔊 [TTS] OpenRouter mode, using system TTS")
             isSpeaking = true
             currentTask = Task {
-                await fallbackToSystemTTS(text: text)
+                await fallbackToSystemTTS(text: text, mode: playbackMode)
                 isSpeaking = false
             }
             return
@@ -149,7 +211,7 @@ class TTSService: NSObject, ObservableObject {
             print("❌ [TTS] No Alibaba API key, falling back to system TTS")
             isSpeaking = true
             currentTask = Task {
-                await fallbackToSystemTTS(text: text)
+                await fallbackToSystemTTS(text: text, mode: playbackMode)
                 isSpeaking = false
             }
             return
@@ -161,12 +223,12 @@ class TTSService: NSObject, ObservableObject {
 
         currentTask = Task {
             do {
-                try await synthesizeAndPlay(text: text, apiKey: finalKey)
+                try await synthesizeAndPlay(text: text, apiKey: finalKey, mode: playbackMode)
             } catch {
                 if !Task.isCancelled {
                     print("❌ [TTS] Error: \(error)")
                     // 失败时回退到系统 TTS
-                    await fallbackToSystemTTS(text: text)
+                    await fallbackToSystemTTS(text: text, mode: playbackMode)
                 }
             }
             if !Task.isCancelled {
@@ -180,13 +242,14 @@ class TTSService: NSObject, ObservableObject {
         currentTask?.cancel()
         currentTask = nil
         stopPlaybackEngine()
+        releaseAudioSession()
         isSpeaking = false
         print("🔊 [TTS] Stopped")
     }
 
     // MARK: - Private Methods
 
-    private func synthesizeAndPlay(text: String, apiKey: String) async throws {
+    private func synthesizeAndPlay(text: String, apiKey: String, mode: TTSPlaybackMode) async throws {
         guard let url = URL(string: baseURL) else {
             throw TTSError.invalidResponse
         }
@@ -228,7 +291,9 @@ class TTSService: NSObject, ObservableObject {
 
         // 确保播放引擎在运行
         if !isPlaybackEngineRunning {
-            startPlaybackEngine()
+            guard startPlaybackEngine(mode: mode) else {
+                throw TTSError.playbackFailed
+            }
         }
 
         // 提前调用 play()，让 playerNode 准备好接收 buffer
@@ -279,6 +344,8 @@ class TTSService: NSObject, ObservableObject {
 
         // 等待播放完成
         await waitForPlaybackCompletion()
+        stopPlaybackEngine()
+        releaseAudioSession()
 
         print("🔊 [TTS] Finished playing")
     }
@@ -302,7 +369,7 @@ class TTSService: NSObject, ObservableObject {
 
         // 确保播放引擎运行中
         if !isPlaybackEngineRunning {
-            startPlaybackEngine()
+            guard startPlaybackEngine() else { return }
         }
 
         // 确保 playerNode 在播放状态（和 OmniRealtimeService 一致）
@@ -363,18 +430,10 @@ class TTSService: NSObject, ObservableObject {
     }
 
     /// 回退到系统 TTS
-    private func fallbackToSystemTTS(text: String) async {
+    private func fallbackToSystemTTS(text: String, mode: TTSPlaybackMode) async {
         print("🔊 [TTS] Falling back to system TTS")
 
-        // 系统 TTS 使用 Playback 模式（不是 PlayAndRecord）
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .default, options: [.duckOthers])
-            try audioSession.setActive(true)
-            print("✅ [TTS] System TTS audio session configured")
-        } catch {
-            print("⚠️ [TTS] System TTS audio session error: \(error)")
-        }
+        guard configureAudioSession(for: mode) else { return }
 
         // 使用实例变量保持强引用，防止被释放
         systemSynthesizer = AVSpeechSynthesizer()
@@ -400,6 +459,7 @@ class TTSService: NSObject, ObservableObject {
             if Task.isCancelled {
                 synthesizer.stopSpeaking(at: .immediate)
                 systemSynthesizer = nil
+                releaseAudioSession()
                 return
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
@@ -407,6 +467,44 @@ class TTSService: NSObject, ObservableObject {
 
         print("✅ [TTS] System TTS finished")
         systemSynthesizer = nil
+        releaseAudioSession()
+    }
+
+    private func observeAudioRouteChanges() {
+        let session = AVAudioSession.sharedInstance()
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: session,
+            queue: nil
+        ) { [weak self] notification in
+            // Route notifications are delivered on a secondary thread.
+            DispatchQueue.main.async { [weak self] in
+                self?.handleAudioRouteChange(notification)
+            }
+        }
+    }
+
+    private func handleAudioRouteChange(_ notification: Notification) {
+        guard ownsAudioSession, isPlaybackEngineRunning else { return }
+        let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)
+            .map { AVAudioSession.RouteChangeReason(rawValue: $0.uintValue) }
+            .map { String(describing: $0) } ?? "unknown"
+        let session = AVAudioSession.sharedInstance()
+        logAudioRoute(session, reason: "route_changed_\(reason)")
+        do {
+            // Never force a speaker/BT route.  Reactivation lets iOS select a
+            // valid replacement after an accessory disconnects.
+            try session.setActive(true)
+            logAudioRoute(session, reason: "route_reactivated")
+        } catch {
+            print("⚠️ [TTS] 路由变化后恢复音频会话失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func logAudioRoute(_ session: AVAudioSession, reason: String) {
+        let inputs = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+        let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        print("🔊 [TTS] 音频路由 reason=\(reason) category=\(session.category.rawValue) mode=\(session.mode.rawValue) input=\(inputs.isEmpty ? "none" : inputs) output=\(outputs.isEmpty ? "none" : outputs)")
     }
 }
 

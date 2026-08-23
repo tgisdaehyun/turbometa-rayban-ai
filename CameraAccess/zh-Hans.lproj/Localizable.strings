@@ -377,6 +377,15 @@
 "livetranslate.vision.off" = "已关闭，不读取或上传画面";
 "livetranslate.vision.on" = "每轮讲话上传 1 张最新眼镜画面";
 
+// 翻译会话记录
+"records.translation.empty" = "暂无翻译会话";
+"records.translation.empty.hint" = "完成实时翻译后，会话记录会显示在这里";
+"records.translation.delete" = "删除会话";
+"records.translation.mixedDirection" = "多语言会话";
+"records.translation.turnCount" = "%d 句";
+"records.translation.detail.title" = "翻译详情";
+"records.translation.detail.timeRange" = "%@ – %@";
+
 // Live Translate Settings
 "livetranslate.settings.title" = "翻译设置";
 "livetranslate.settings.sourceLanguage" = "源语言";
