@@ -232,8 +232,14 @@ class OmniRealtimeService: NSObject {
 
             let audioSession = AVAudioSession.sharedInstance()
 
-            // Allow Bluetooth to use the glasses' microphone
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+            // Prefer the glasses duplex route; if it is unavailable, never
+            // let the fallback output collapse to the quiet receiver.
+            let configuration = AudioSessionPolicy.glassesDuplex
+            try audioSession.setCategory(
+                configuration.category,
+                mode: configuration.mode,
+                options: configuration.options
+            )
             try audioSession.setActive(true)
 
             guard let engine = audioEngine else {

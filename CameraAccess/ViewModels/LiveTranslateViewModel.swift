@@ -109,6 +109,8 @@ class LiveTranslateViewModel: ObservableObject {
     private var currentSessionID: UUID?
     private var persistedRecordSignatures: [UUID: String] = [:]
     private var finalizationTask: Task<Void, Never>?
+    private var settingsReconnectTask: Task<Void, Never>?
+    private var recoveryReconnectTask: Task<Void, Never>?
     private var shouldMaintainConnection = false
     private var hasFinalizedCurrentSession = false
 
@@ -205,6 +207,11 @@ class LiveTranslateViewModel: ObservableObject {
 
     func connect() {
         shouldMaintainConnection = true
+        guard translateService == nil else { return }
+        connectFreshService()
+    }
+
+    private func connectFreshService() {
         let apiKey = APIProviderManager.staticLiveAIAPIKey
         guard !apiKey.isEmpty else {
             errorMessage = "livetranslate.error.noApiKey".localized
@@ -212,24 +219,29 @@ class LiveTranslateViewModel: ObservableObject {
             return
         }
 
-        activeTurns = []
-        translateService = LiveTranslateService(apiKey: apiKey)
+        isConnected = false
+        let service = LiveTranslateService(apiKey: apiKey)
+        translateService = service
         setupCallbacks()
 
-        translateService?.updateSettings(
+        service.updateSettings(
             sourceLanguage: sourceLanguage,
             targetLanguage: targetLanguage,
             voice: selectedVoice,
             audioEnabled: audioOutputEnabled
         )
 
-        translateService?.connect()
+        service.connect()
     }
 
     func disconnect() {
         shouldMaintainConnection = false
         finalizationTask?.cancel()
         finalizationTask = nil
+        settingsReconnectTask?.cancel()
+        settingsReconnectTask = nil
+        recoveryReconnectTask?.cancel()
+        recoveryReconnectTask = nil
         translateService?.disconnect()
         translateService = nil
         isConnected = false
@@ -287,6 +299,7 @@ class LiveTranslateViewModel: ObservableObject {
             guard let self, let service else { return }
             await service.finishSession()
             guard !Task.isCancelled else { return }
+            guard self.translateService === service else { return }
             self.finalizeCurrentSession()
             service.disconnect()
             self.translateService = nil
@@ -294,7 +307,7 @@ class LiveTranslateViewModel: ObservableObject {
             self.isFinalizing = false
             self.finalizationTask = nil
             if self.shouldMaintainConnection {
-                self.connect()
+                self.connectFreshService()
             }
         }
     }
@@ -457,6 +470,29 @@ class LiveTranslateViewModel: ObservableObject {
             }
         }
 
+        service.onDisconnected = { [weak self, weak service] expected, reason in
+            Task { @MainActor in
+                guard let self, let service, self.translateService === service else { return }
+                self.isConnected = false
+
+                // During normal finalization, finishSession owns cleanup and
+                // reconnect. Do not race it with a second connection attempt.
+                if self.isFinalizing { return }
+
+                self.isRecording = false
+                if self.currentSessionID != nil {
+                    self.finalizeCurrentSession()
+                }
+                self.translateService = nil
+
+                guard self.shouldMaintainConnection else { return }
+                if !expected, let reason, !reason.isEmpty {
+                    print("⚠️ [TranslateVM] 连接异常，准备恢复: \(reason)")
+                }
+                self.scheduleRecoveryReconnect()
+            }
+        }
+
         service.onError = { [weak self, weak service] error in
             DispatchQueue.main.async {
                 guard let self, let service, self.translateService === service else { return }
@@ -467,13 +503,46 @@ class LiveTranslateViewModel: ObservableObject {
     }
 
     private func updateServiceSettings() {
+        // An Alibaba LiveTranslate session is immutable after it starts. End
+        // the active business session; the latest preferences are applied to
+        // the fresh socket created by the finalization path.
+        if isRecording {
+            stopRecording()
+            return
+        }
+        guard !isFinalizing else { return }
+
         turnCoordinator.updateLanguages(source: sourceLanguage, target: targetLanguage)
-        translateService?.updateSettings(
-            sourceLanguage: sourceLanguage,
-            targetLanguage: targetLanguage,
-            voice: selectedVoice,
-            audioEnabled: audioOutputEnabled
-        )
+        guard shouldMaintainConnection else { return }
+
+        // Source/target swapping changes two @Published properties. Coalesce
+        // them so the server sees one new session with the final pair.
+        settingsReconnectTask?.cancel()
+        settingsReconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, !Task.isCancelled,
+                  self.shouldMaintainConnection,
+                  !self.isRecording,
+                  !self.isFinalizing else { return }
+            self.settingsReconnectTask = nil
+            let oldService = self.translateService
+            self.translateService = nil
+            self.isConnected = false
+            oldService?.disconnect()
+            self.connectFreshService()
+        }
+    }
+
+    private func scheduleRecoveryReconnect() {
+        recoveryReconnectTask?.cancel()
+        recoveryReconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, !Task.isCancelled,
+                  self.shouldMaintainConnection,
+                  self.translateService == nil else { return }
+            self.recoveryReconnectTask = nil
+            self.connectFreshService()
+        }
     }
 
     // MARK: - Turn and Image Handling

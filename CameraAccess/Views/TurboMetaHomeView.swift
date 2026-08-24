@@ -18,6 +18,7 @@ struct TurboMetaHomeView: View {
     @State private var showLeanEat = false
     @State private var showQuickVision = false
     @State private var showLiveTranslate = false
+    @State private var showAudioNote = false
     @State private var showOpenClaw = false
     @ObservedObject private var openClawService = OpenClawNodeService.shared
 
@@ -84,16 +85,25 @@ struct TurboMetaHomeView: View {
                                 }
 
                                 FeatureCard(
-                                    title: "OpenClaw",
-                                    subtitle: openClawService.connectionState == .connected ? "home.openclaw.connected".localized : "home.openclaw.subtitle".localized,
-                                    icon: "link.circle.fill",
-                                    gradient: [Color.purple, Color.indigo]
+                                    title: "audioNote.title".localized,
+                                    subtitle: "audioNote.home.subtitle".localized,
+                                    icon: "waveform.badge.mic",
+                                    gradient: [Color.red, Color.orange]
                                 ) {
-                                    showOpenClaw = true
+                                    showAudioNote = true
                                 }
                             }
 
-                            // Row 3 - RTMP Streaming (Experimental)
+                            FeatureCardWide(
+                                title: "OpenClaw",
+                                subtitle: openClawService.connectionState == .connected ? "home.openclaw.connected".localized : "home.openclaw.subtitle".localized,
+                                icon: "link.circle.fill",
+                                gradient: [Color.purple, Color.indigo]
+                            ) {
+                                showOpenClaw = true
+                            }
+
+                            // Row 4 - RTMP Streaming (Experimental)
                             FeatureCardWide(
                                 title: "home.rtmp.title".localized,
                                 subtitle: "home.rtmp.subtitle".localized,
@@ -147,6 +157,9 @@ struct TurboMetaHomeView: View {
             }
             .fullScreenCover(isPresented: $showLiveTranslate) {
                 LiveTranslateView(streamViewModel: streamViewModel)
+            }
+            .fullScreenCover(isPresented: $showAudioNote) {
+                AudioNoteView()
             }
             .fullScreenCover(isPresented: $showOpenClaw) {
                 OpenClawChatView(streamViewModel: streamViewModel)

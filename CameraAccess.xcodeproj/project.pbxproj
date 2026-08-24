@@ -95,6 +95,14 @@
 		OC1005000500050005 /* OpenClawDeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = OC2005000500050005 /* OpenClawDeviceIdentity.swift */; };
 		OC1006000600060006 /* OpenClawChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = OC2006000600060006 /* OpenClawChatView.swift */; };
 		OC1007000700070007 /* OpenClawASRService.swift in Sources */ = {isa = PBXBuildFile; fileRef = OC2007000700070007 /* OpenClawASRService.swift */; };
+		AN2001000000000001 /* AudioNoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AN1001000000000001 /* AudioNoteModels.swift */; };
+		AN2002000000000002 /* AudioNoteStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AN1002000000000002 /* AudioNoteStorage.swift */; };
+		AN2003000000000003 /* AudioNoteRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AN1003000000000003 /* AudioNoteRecorder.swift */; };
+		AN2004000000000004 /* AudioNoteTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AN1004000000000004 /* AudioNoteTranscriptionService.swift */; };
+		AN2005000000000005 /* AudioNoteViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AN1005000000000005 /* AudioNoteViewModel.swift */; };
+		AN2006000000000006 /* AudioNoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AN1006000000000006 /* AudioNoteView.swift */; };
+		AN2007000000000007 /* AudioNoteRecordsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AN1007000000000007 /* AudioNoteRecordsView.swift */; };
+		AN2008000000000008 /* AudioNoteSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AN1008000000000008 /* AudioNoteSettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -210,6 +218,14 @@
 		OC2005000500050005 /* OpenClawDeviceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawDeviceIdentity.swift; sourceTree = "<group>"; };
 		OC2006000600060006 /* OpenClawChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawChatView.swift; sourceTree = "<group>"; };
 		OC2007000700070007 /* OpenClawASRService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawASRService.swift; sourceTree = "<group>"; };
+		AN1001000000000001 /* AudioNoteModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioNoteModels.swift; sourceTree = "<group>"; };
+		AN1002000000000002 /* AudioNoteStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioNoteStorage.swift; sourceTree = "<group>"; };
+		AN1003000000000003 /* AudioNoteRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioNoteRecorder.swift; sourceTree = "<group>"; };
+		AN1004000000000004 /* AudioNoteTranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioNoteTranscriptionService.swift; sourceTree = "<group>"; };
+		AN1005000000000005 /* AudioNoteViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioNoteViewModel.swift; sourceTree = "<group>"; };
+		AN1006000000000006 /* AudioNoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioNoteView.swift; sourceTree = "<group>"; };
+		AN1007000000000007 /* AudioNoteRecordsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioNoteRecordsView.swift; sourceTree = "<group>"; };
+		AN1008000000000008 /* AudioNoteSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioNoteSettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -264,6 +280,7 @@
 		4BA57A8C2EF8227E002EC214 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				AN1001000000000001 /* AudioNoteModels.swift */,
 				4BB5DFEE2F06C05E00AF7BD0 /* LiveAIModels.swift */,
 				4BA57A8A2EF8227E002EC214 /* ConversationRecord.swift */,
 				4BA57A8B2EF8227E002EC214 /* FoodNutritionModel.swift */,
@@ -276,6 +293,9 @@
 		4BA57A922EF8227E002EC214 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				AN1002000000000002 /* AudioNoteStorage.swift */,
+				AN1003000000000003 /* AudioNoteRecorder.swift */,
+				AN1004000000000004 /* AudioNoteTranscriptionService.swift */,
 				OC3000000000000000 /* OpenClaw */,
 				4B69CCC62F050D5D00D1D025 /* RTMPStreamingService.swift */,
 				4BA57A8D2EF8227E002EC214 /* ConversationStorage.swift */,
@@ -323,6 +343,7 @@
 		4BA57AA12EF8227E002EC214 /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
+				AN1005000000000005 /* AudioNoteViewModel.swift */,
 				4B69CCC42F050D5200D1D025 /* RTMPStreamingViewModel.swift */,
 				4BA57A9A2EF8227E002EC214 /* MockDeviceKit */,
 				4BA57A9B2EF8227E002EC214 /* DebugMenuViewModel.swift */,
@@ -361,6 +382,9 @@
 		4BA57ABF2EF8227E002EC214 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				AN1006000000000006 /* AudioNoteView.swift */,
+				AN1007000000000007 /* AudioNoteRecordsView.swift */,
+				AN1008000000000008 /* AudioNoteSettingsView.swift */,
 				4BB5DFF22F06C07A00AF7BD0 /* LiveAISettingsView.swift */,
 				4B69CCC22F050D4300D1D025 /* RTMPStreamingView.swift */,
 				4BA57AF52EF82400002EC214 /* PermissionsRequestView.swift */,
@@ -580,6 +604,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AN2001000000000001 /* AudioNoteModels.swift in Sources */,
+				AN2002000000000002 /* AudioNoteStorage.swift in Sources */,
+				AN2003000000000003 /* AudioNoteRecorder.swift in Sources */,
+				AN2004000000000004 /* AudioNoteTranscriptionService.swift in Sources */,
+				AN2005000000000005 /* AudioNoteViewModel.swift in Sources */,
+				AN2006000000000006 /* AudioNoteView.swift in Sources */,
+				AN2007000000000007 /* AudioNoteRecordsView.swift in Sources */,
+				AN2008000000000008 /* AudioNoteSettingsView.swift in Sources */,
 				8FD96B7F2E6F0A9800F56AB1 /* TurboMetaApp.swift in Sources */,
 				4BA57AC32EF8227E002EC214 /* ConversationDetailView.swift in Sources */,
 				4BA57AC42EF8227E002EC214 /* CircleButton.swift in Sources */,

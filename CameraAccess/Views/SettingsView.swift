@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State private var showQuickVisionSettings = false
     @State private var showLiveAISettings = false
     @State private var showLiveTranslateSettings = false
+    @State private var showAudioNoteSettings = false
     @State private var showOpenClawSettings = false
     @ObservedObject var quickVisionModeManager = QuickVisionModeManager.shared
     @ObservedObject var liveAIModeManager = LiveAIModeManager.shared
@@ -300,6 +301,21 @@ struct SettingsView: View {
                                 .foregroundColor(AppColors.textTertiary)
                         }
                     }
+
+                    Button {
+                        showAudioNoteSettings = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "waveform.badge.mic")
+                                .foregroundColor(.red)
+                            Text("audioNote.settings.title".localized)
+                                .foregroundColor(AppColors.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(AppTypography.caption)
+                                .foregroundColor(AppColors.textTertiary)
+                        }
+                    }
                 } header: {
                     Text("settings.liveai".localized)
                 }
@@ -394,6 +410,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showLiveTranslateSettings) {
                 LiveTranslateSettingsView(viewModel: LiveTranslateViewModel())
+            }
+            .sheet(isPresented: $showAudioNoteSettings) {
+                AudioNoteSettingsView()
             }
             .sheet(isPresented: $showOpenClawSettings) {
                 OpenClawSettingsView()

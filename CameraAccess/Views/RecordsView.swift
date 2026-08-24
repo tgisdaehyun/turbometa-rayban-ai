@@ -22,16 +22,20 @@ struct RecordsView: View {
                             selectedTab = 1
                         }
 
-                        RecordTabButton(title: "LeanEat", isSelected: selectedTab == 2) {
+                        RecordTabButton(title: "audioNote.records.tab".localized, isSelected: selectedTab == 2) {
                             selectedTab = 2
                         }
 
-                        RecordTabButton(title: "WordLearn", isSelected: selectedTab == 3) {
+                        RecordTabButton(title: "LeanEat", isSelected: selectedTab == 3) {
                             selectedTab = 3
                         }
 
-                        RecordTabButton(title: "quickvision.tab".localized, isSelected: selectedTab == 4) {
+                        RecordTabButton(title: "WordLearn", isSelected: selectedTab == 4) {
                             selectedTab = 4
+                        }
+
+                        RecordTabButton(title: "quickvision.tab".localized, isSelected: selectedTab == 5) {
+                            selectedTab = 5
                         }
                     }
                     .padding(.horizontal, AppSpacing.lg)
@@ -47,14 +51,17 @@ struct RecordsView: View {
                     TranslationRecordsView()
                         .tag(1)
 
-                    LeanEatRecordsView()
+                    AudioNoteRecordsView()
                         .tag(2)
 
-                    WordLearnRecordsView()
+                    LeanEatRecordsView()
                         .tag(3)
 
-                    QuickVisionRecordsView()
+                    WordLearnRecordsView()
                         .tag(4)
+
+                    QuickVisionRecordsView()
+                        .tag(5)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
             }

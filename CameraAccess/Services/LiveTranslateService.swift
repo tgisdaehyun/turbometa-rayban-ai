@@ -7,11 +7,47 @@ import Foundation
 import UIKit
 import AVFoundation
 
+enum LiveTranslateSessionState: Hashable {
+    case disconnected
+    case connecting
+    case configuring
+    case ready
+    case recording
+    case finishing
+    case finished
+    case failed
+}
+
+/// Thread-safe protocol lifecycle. A LiveTranslate WebSocket owns exactly one
+/// server session; configuration is legal only between open and ready.
+final class LiveTranslateSessionLifecycle {
+    private let lock = NSLock()
+    private var storedState: LiveTranslateSessionState = .disconnected
+
+    var state: LiveTranslateSessionState {
+        lock.withLock { storedState }
+    }
+
+    @discardableResult
+    func transition(from allowed: Set<LiveTranslateSessionState>, to newState: LiveTranslateSessionState) -> Bool {
+        lock.withLock {
+            guard allowed.contains(storedState) else { return false }
+            storedState = newState
+            return true
+        }
+    }
+
+    func reset() {
+        lock.withLock { storedState = .disconnected }
+    }
+}
+
 /// The audio-session choices used by the realtime audio services.
 ///
 /// Keep these values as data so they can be tested without requiring an
-/// attached Bluetooth device.  A glasses-microphone session explicitly opts
-/// into Bluetooth input/output profiles, but never forces the phone speaker.
+/// attached Bluetooth device. Duplex sessions default to the loudspeaker
+/// whenever no Bluetooth route is available; this prevents iOS from silently
+/// falling back to the receiver.
 struct AudioSessionConfiguration {
     let category: AVAudioSession.Category
     let mode: AVAudioSession.Mode
@@ -19,14 +55,15 @@ struct AudioSessionConfiguration {
 }
 
 enum AudioSessionPolicy {
-    /// Live Translate with the phone microphone can use the high quality A2DP
-    /// output profile while retaining a local input.
+    /// The microphone preference only controls input selection. Output routing
+    /// is identical for both modes: iOS may use an available Bluetooth output
+    /// (A2DP/HFP), otherwise `.defaultToSpeaker` provides the phone fallback.
     static func liveTranslate(usePhoneMic: Bool) -> AudioSessionConfiguration {
         if usePhoneMic {
             return AudioSessionConfiguration(
                 category: .playAndRecord,
                 mode: .default,
-                options: [.allowBluetoothA2DP]
+                options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
             )
         }
 
@@ -36,7 +73,7 @@ enum AudioSessionPolicy {
         return AudioSessionConfiguration(
             category: .playAndRecord,
             mode: .voiceChat,
-            options: [.allowBluetoothHFP, .allowBluetoothA2DP]
+            options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
         )
     }
 
@@ -45,7 +82,7 @@ enum AudioSessionPolicy {
     static let glassesDuplex = AudioSessionConfiguration(
         category: .playAndRecord,
         mode: .voiceChat,
-        options: [.allowBluetoothHFP, .allowBluetoothA2DP]
+        options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
     )
 
     /// Standalone TTS/Quick Vision only needs an output session.  `.playback`
@@ -130,10 +167,16 @@ class LiveTranslateService: NSObject {
     var onResponseStarted: ((_ responseID: String) -> Void)?
     var onResponseFinished: ((_ responseID: String) -> Void)?
     var onSessionFinished: (() -> Void)?
+    /// `expected` is true for an explicit close or the mandatory close after
+    /// `session.finished`; false means the caller should recover/reconnect.
+    var onDisconnected: ((_ expected: Bool, _ reason: String?) -> Void)?
     var onError: ((String) -> Void)?
 
     // State
     private var isRecording = false
+    private let lifecycle = LiveTranslateSessionLifecycle()
+    private let transportLock = NSLock()
+    private var hasPublishedDisconnect = false
     private var eventIdCounter = 0
     private var finishContinuation: CheckedContinuation<Void, Never>?
     private var finishTimeoutWorkItem: DispatchWorkItem?
@@ -229,12 +272,19 @@ class LiveTranslateService: NSObject {
     // MARK: - WebSocket Connection
 
     func connect() {
+        guard lifecycle.transition(from: [.disconnected, .finished, .failed], to: .connecting) else {
+            print("⚠️ [Translate] 忽略重复连接，当前状态: \(lifecycle.state)")
+            return
+        }
+        transportLock.withLock { hasPublishedDisconnect = false }
         let urlString = "\(baseURL)?model=\(model)"
         print("🔌 [Translate] 准备连接 WebSocket: \(urlString)")
 
         guard let url = URL(string: urlString) else {
             print("❌ [Translate] 无效的 URL")
+            _ = lifecycle.transition(from: [.connecting], to: .failed)
             onError?("Invalid URL")
+            publishDisconnected(expected: false, reason: "Invalid URL")
             return
         }
 
@@ -244,8 +294,9 @@ class LiveTranslateService: NSObject {
         let configuration = URLSessionConfiguration.default
         urlSession = URLSession(configuration: configuration, delegate: self, delegateQueue: OperationQueue())
 
-        webSocket = urlSession?.webSocketTask(with: request)
-        webSocket?.resume()
+        let task = urlSession?.webSocketTask(with: request)
+        transportLock.withLock { webSocket = task }
+        task?.resume()
 
         print("🔌 [Translate] WebSocket 任务已启动")
         receiveMessage()
@@ -253,10 +304,8 @@ class LiveTranslateService: NSObject {
 
     func disconnect() {
         print("🔌 [Translate] 断开 WebSocket 连接")
-        webSocket?.cancel(with: .goingAway, reason: nil)
-        webSocket = nil
-        urlSession?.invalidateAndCancel()
-        urlSession = nil
+        closeTransport(expected: true, reason: nil)
+        lifecycle.reset()
         stopRecording()
         cancelPlaybackQueue()
         stopPlaybackEngine()
@@ -265,6 +314,50 @@ class LiveTranslateService: NSObject {
         finishTimeoutWorkItem = nil
         finishContinuation?.resume()
         finishContinuation = nil
+    }
+
+    private func closeTransport(expected: Bool, reason: String?) {
+        let transport = transportLock.withLock { () -> (URLSessionWebSocketTask?, URLSession?) in
+            let value = (webSocket, urlSession)
+            webSocket = nil
+            urlSession = nil
+            return value
+        }
+        transport.0?.cancel(with: .goingAway, reason: nil)
+        transport.1?.invalidateAndCancel()
+        publishDisconnected(expected: expected, reason: reason)
+    }
+
+    private func publishDisconnected(expected: Bool, reason: String?) {
+        let shouldPublish = transportLock.withLock { () -> Bool in
+            guard !hasPublishedDisconnect else { return false }
+            hasPublishedDisconnect = true
+            return true
+        }
+        guard shouldPublish else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.onDisconnected?(expected, reason)
+        }
+    }
+
+    private func failTransport(_ reason: String) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.failTransport(reason)
+            }
+            return
+        }
+        guard lifecycle.transition(
+            from: [.connecting, .configuring, .ready, .recording, .finishing],
+            to: .failed
+        ) else { return }
+        stopRecording()
+        releaseAudioSession()
+        finishTimeoutWorkItem?.cancel()
+        finishTimeoutWorkItem = nil
+        finishContinuation?.resume()
+        finishContinuation = nil
+        closeTransport(expected: false, reason: reason)
     }
 
     // MARK: - Configuration
@@ -288,13 +381,16 @@ class LiveTranslateService: NSObject {
         }
         self.audioOutputEnabled = normalizedAudioEnabled
 
-        // 如果已连接，重新配置会话
-        if webSocket != nil {
-            configureSession()
-        }
+        // Deliberately do not send session.update here. Alibaba allows the
+        // configuration only during session initialization. The view model
+        // replaces the socket when settings change.
     }
 
     private func configureSession() {
+        guard lifecycle.state == .configuring else {
+            print("⚠️ [Translate] 当前状态不允许 session.update: \(lifecycle.state)")
+            return
+        }
         var session = Self.sessionOutputFields(
             audioEnabled: audioOutputEnabled,
             voice: voice
@@ -338,7 +434,11 @@ class LiveTranslateService: NSObject {
     /// playback, with a bounded timeout for network failures.
     func finishSession(timeout: TimeInterval = 8) async {
         stopRecording()
-        guard webSocket != nil else { return }
+        guard lifecycle.transition(from: [.recording, .ready], to: .finishing) else { return }
+        guard transportLock.withLock({ webSocket != nil }) else {
+            failTransport("Socket 未连接")
+            return
+        }
 
         hasReceivedSessionFinished = false
         sendEvent([
@@ -351,17 +451,19 @@ class LiveTranslateService: NSObject {
             finishTimeoutWorkItem?.cancel()
             let timeoutWorkItem = DispatchWorkItem { [weak self] in
                 guard let self else { return }
-                // A network timeout should not truncate audio that has already
-                // been received. Stop accepting late chunks before sealing
-                // incomplete responses, then drain the local playback queue.
-                self.webSocket?.cancel(with: .goingAway, reason: nil)
-                self.webSocket = nil
-                self.urlSession?.invalidateAndCancel()
-                self.urlSession = nil
-                self.hasReceivedSessionFinished = true
-                self.audioQueue.markAllServerFinished()
-                self.playNextResponseIfReady()
-                self.completeFinishIfReady()
+                if self.lifecycle.transition(from: [.finishing], to: .failed) {
+                    // The server never acknowledged finish. The transport and
+                    // queue are no longer trustworthy, so recover within a
+                    // bounded time instead of leaving the mic disabled.
+                    self.closeTransport(expected: false, reason: "Session finish timeout")
+                    self.hasReceivedSessionFinished = true
+                    self.clearPlaybackQueue()
+                    self.completeFinishIfReady(force: true)
+                } else if self.lifecycle.state == .finished {
+                    // Normally keep strict, complete playback. A lost player
+                    // completion callback must still not wedge the app forever.
+                    self.schedulePlaybackDrainTimeout(after: 22)
+                }
             }
             finishTimeoutWorkItem = timeoutWorkItem
             DispatchQueue.main.asyncAfter(
@@ -372,11 +474,25 @@ class LiveTranslateService: NSObject {
         }
     }
 
+    private func schedulePlaybackDrainTimeout(after delay: TimeInterval) {
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.finishContinuation != nil else { return }
+            print("⚠️ [Translate] 播放队列收尾超时，释放 Session")
+            self.clearPlaybackQueue()
+            self.completeFinishIfReady(force: true)
+        }
+        finishTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
     // MARK: - Audio Recording
 
     @discardableResult
     func startRecording(usePhoneMic: Bool = false) -> Bool {
-        guard !isRecording else { return false }
+        guard !isRecording, lifecycle.state == .ready else {
+            print("⚠️ [Translate] 当前 Session 尚未就绪，无法录音: \(lifecycle.state)")
+            return false
+        }
 
         do {
             print("🎤 [Translate] 开始录音, 使用\(usePhoneMic ? "iPhone" : "蓝牙")麦克风")
@@ -402,15 +518,15 @@ class LiveTranslateService: NSObject {
             try audioSession.setActive(true)
             ownsAudioSession = true
 
-            // Input selection must not imply an output override. In
-            // particular, never use `.defaultToSpeaker`: translated audio
-            // should remain on the user's current Bluetooth/glasses route.
             let preferredInputType: AVAudioSession.Port = usePhoneMic ? .builtInMic : .bluetoothHFP
-            let preferredInput = audioSession.availableInputs?.first {
+            guard let preferredInput = audioSession.availableInputs?.first(where: {
                 $0.portType == preferredInputType
+            }) else {
+                throw LiveTranslateAudioSessionError.inputUnavailable(usePhoneMic: usePhoneMic)
             }
-            preferredInputUID = preferredInput?.uid
+            preferredInputUID = preferredInput.uid
             try audioSession.setPreferredInput(preferredInput)
+            try allowSystemPreferredOutput(on: audioSession)
             print("🎙️ [Translate] 使用\(usePhoneMic ? "iPhone" : "蓝牙")麦克风")
 
             logAudioRoute(audioSession, reason: "recording_started")
@@ -427,7 +543,16 @@ class LiveTranslateService: NSObject {
 
             engine.prepare()
             try engine.start()
+            // Starting the input engine may renegotiate the route. Clear any
+            // stale speaker override without coupling output to input choice.
+            try allowSystemPreferredOutput(on: audioSession)
 
+            guard lifecycle.transition(from: [.ready], to: .recording) else {
+                engine.stop()
+                inputNode.removeTap(onBus: 0)
+                releaseAudioSession()
+                return false
+            }
             isRecording = true
             print("✅ [Translate] 录音已启动")
             return true
@@ -478,6 +603,7 @@ class LiveTranslateService: NSObject {
                 preferredInputUID = preferredInput.uid
                 try audioSession.setPreferredInput(preferredInput)
             }
+            try allowSystemPreferredOutput(on: audioSession)
             ownsAudioSession = true
             logAudioRoute(audioSession, reason: "playback_activated")
             return true
@@ -531,10 +657,8 @@ class LiveTranslateService: NSObject {
 
         guard isRecording || isPlaybackEngineRunning else { return }
         do {
-            // Do not call overrideOutputAudioPort or blindly reselect a
-            // route.  iOS will choose a valid replacement after disconnect;
-            // reactivation is enough to recover from an interrupted session.
             try session.setActive(true)
+            try allowSystemPreferredOutput(on: session)
             logAudioRoute(session, reason: "route_reactivated")
         } catch {
             print("⚠️ [Translate] 路由变化后恢复音频会话失败: \(error.localizedDescription)")
@@ -547,6 +671,13 @@ class LiveTranslateService: NSObject {
         let inputs = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
         let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
         print("🔊 [Translate] 音频路由 reason=\(reason) category=\(session.category.rawValue) mode=\(session.mode.rawValue) input=\(inputs.isEmpty ? "none" : inputs) output=\(outputs.isEmpty ? "none" : outputs)")
+    }
+
+    /// Remove overrides left by another feature. Bluetooth is allowed by the
+    /// category options; when no compatible Bluetooth output is active,
+    /// `.defaultToSpeaker` prevents fallback to the receiver.
+    private func allowSystemPreferredOutput(on session: AVAudioSession) throws {
+        try session.overrideOutputAudioPort(.none)
     }
 
     func stopRecording() {
@@ -690,11 +821,18 @@ class LiveTranslateService: NSObject {
             return
         }
 
+        guard let socket = transportLock.withLock({ webSocket }) else {
+            print("⚠️ [Translate] 忽略发送，Socket 未连接")
+            return
+        }
         let message = URLSessionWebSocketTask.Message.string(jsonString)
-        webSocket?.send(message) { [weak self] error in
+        socket.send(message) { [weak self, weak socket] error in
             if let error = error {
                 print("❌ [Translate] 发送事件失败: \(error.localizedDescription)")
-                self?.onError?("Send error: \(error.localizedDescription)")
+                guard let self, let socket,
+                      self.transportLock.withLock({ self.webSocket === socket }) else { return }
+                self.onError?("Send error: \(error.localizedDescription)")
+                self.failTransport(error.localizedDescription)
             }
         }
     }
@@ -702,6 +840,7 @@ class LiveTranslateService: NSObject {
     private var audioSendCount = 0
 
     private func sendAudioAppend(_ base64Audio: String) {
+        guard lifecycle.state == .recording else { return }
         audioSendCount += 1
         if audioSendCount == 1 || audioSendCount % 50 == 0 {
             print("🎵 [Translate] 发送音频块 #\(audioSendCount), 大小: \(base64Audio.count) bytes")
@@ -718,16 +857,19 @@ class LiveTranslateService: NSObject {
     // MARK: - Receive Messages
 
     private func receiveMessage() {
-        webSocket?.receive { [weak self] result in
+        guard let socket = transportLock.withLock({ webSocket }) else { return }
+        socket.receive { [weak self, weak socket] result in
+            guard let self, let socket,
+                  self.transportLock.withLock({ self.webSocket === socket }) else { return }
             switch result {
             case .success(let message):
-                self?.handleMessage(message)
-                self?.receiveMessage()
+                self.handleMessage(message)
+                self.receiveMessage()
 
             case .failure(let error):
-                guard self?.webSocket != nil else { return }
                 print("❌ [Translate] 接收消息失败: \(error.localizedDescription)")
-                self?.onError?("Receive error: \(error.localizedDescription)")
+                self.onError?("Receive error: \(error.localizedDescription)")
+                self.failTransport(error.localizedDescription)
             }
         }
     }
@@ -765,6 +907,7 @@ class LiveTranslateService: NSObject {
                 print("✅ [Translate] 会话已创建，等待配置确认")
 
             case TranslateServerEvent.sessionUpdated.rawValue:
+                guard self.lifecycle.transition(from: [.configuring], to: .ready) else { return }
                 print("✅ [Translate] 会话配置已确认")
                 self.onConnected?()
 
@@ -882,8 +1025,13 @@ class LiveTranslateService: NSObject {
                 if let responseID { self.onResponseFinished?(responseID) }
 
             case TranslateServerEvent.sessionFinished.rawValue:
+                guard self.lifecycle.transition(from: [.finishing], to: .finished) else { return }
                 self.hasReceivedSessionFinished = true
                 self.onSessionFinished?()
+                // A finished Alibaba session is terminal. Close its socket
+                // immediately; already buffered translated audio may continue
+                // to drain locally before finishSession returns.
+                self.closeTransport(expected: true, reason: "session.finished")
                 self.completeFinishIfReady()
 
             case TranslateServerEvent.error.rawValue:
@@ -891,6 +1039,7 @@ class LiveTranslateService: NSObject {
                    let message = error["message"] as? String {
                     print("❌ [Translate] 服务器错误: \(message)")
                     self.onError?(message)
+                    self.failTransport(message)
                 }
 
             default:
@@ -1062,12 +1211,28 @@ class LiveTranslateService: NSObject {
     }
 }
 
+private enum LiveTranslateAudioSessionError: LocalizedError {
+    case inputUnavailable(usePhoneMic: Bool)
+
+    var errorDescription: String? {
+        switch self {
+        case .inputUnavailable(true):
+            return "livetranslate.error.phoneMicUnavailable".localized
+        case .inputUnavailable(false):
+            return "livetranslate.error.glassesMicUnavailable".localized
+        }
+    }
+}
+
 // MARK: - URLSessionWebSocketDelegate
 
 extension LiveTranslateService: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         print("✅ [Translate] WebSocket 连接已建立")
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self, weak webSocketTask] in
+            guard let self, let webSocketTask,
+                  self.transportLock.withLock({ self.webSocket === webSocketTask }),
+                  self.lifecycle.transition(from: [.connecting], to: .configuring) else { return }
             self.configureSession()
         }
     }
@@ -1075,5 +1240,13 @@ extension LiveTranslateService: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "unknown"
         print("🔌 [Translate] WebSocket 已断开, closeCode: \(closeCode.rawValue), reason: \(reasonString)")
+        let isCurrent = transportLock.withLock { webSocket === webSocketTask }
+        guard isCurrent else { return }
+        let wasExpected = lifecycle.state == .finished || lifecycle.state == .disconnected
+        if wasExpected {
+            closeTransport(expected: true, reason: reasonString)
+        } else {
+            failTransport(reasonString)
+        }
     }
 }

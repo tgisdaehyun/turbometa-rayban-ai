@@ -159,6 +159,81 @@ class ViewModelIntegrationTests: XCTestCase {
   }
 }
 
+final class AudioNoteTests: XCTestCase {
+  private func makeStorage() throws -> (AudioNoteStorage, URL) {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("AudioNoteTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    return (AudioNoteStorage(baseURL: root), root)
+  }
+
+  private func makeNote(id: UUID = UUID(), text: String = "hello") -> AudioNote {
+    AudioNote(
+      id: id,
+      title: "Test",
+      createdAt: Date(timeIntervalSince1970: 100),
+      updatedAt: Date(timeIntervalSince1970: 100),
+      duration: 3,
+      audioRelativePath: "\(id.uuidString)/audio.m4a",
+      input: .glasses,
+      languageHints: ["en"],
+      diarizationEnabled: true,
+      status: .completed,
+      taskID: "task-1",
+      remoteURL: "oss://temporary/audio.m4a",
+      segments: [
+        AudioTranscriptSegment(
+          beginTimeMs: 100,
+          endTimeMs: 2200,
+          originalText: text,
+          speakerID: 0,
+          words: [AudioTranscriptWord(beginTimeMs: 100, endTimeMs: 500, text: "hello")]
+        )
+      ],
+      speakerNames: ["0": "Alice"],
+      errorMessage: nil
+    )
+  }
+
+  func testAudioNoteStorageRoundTripPreservesTimeline() throws {
+    let (storage, root) = try makeStorage()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let note = makeNote()
+
+    storage.upsert(note)
+    let loaded = storage.loadAll().first
+
+    XCTAssertEqual(loaded?.id, note.id)
+    XCTAssertEqual(loaded?.segments.first?.beginTimeMs, 100)
+    XCTAssertEqual(loaded?.segments.first?.endTimeMs, 2200)
+    XCTAssertEqual(loaded?.segments.first?.speakerID, 0)
+    XCTAssertEqual(loaded?.transcript, "hello")
+  }
+
+  func testDeletingOneAudioNoteDoesNotDeleteAnother() throws {
+    let (storage, root) = try makeStorage()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = makeNote(text: "first")
+    let second = makeNote(text: "second")
+    try Data("one".utf8).write(to: storage.directory(for: first.id).appendingPathComponent("audio.m4a"))
+    try Data("two".utf8).write(to: storage.directory(for: second.id).appendingPathComponent("audio.m4a"))
+    storage.upsert(first)
+    storage.upsert(second)
+
+    let remaining = storage.delete(id: first.id)
+
+    XCTAssertEqual(remaining.map(\.id), [second.id])
+    XCTAssertFalse(FileManager.default.fileExists(atPath: storage.audioURL(for: first).path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: storage.audioURL(for: second).path))
+  }
+
+  func testSRTExporterUsesSegmentTimestamps() {
+    let output = SRTExporter.export(makeNote().segments)
+    XCTAssertTrue(output.contains("00:00:00,100 --> 00:00:02,200"))
+    XCTAssertTrue(output.contains("hello"))
+  }
+}
+
 final class LiveAIInputModeTests: XCTestCase {
 
   func testInputModesProduceDifferentPromptConstraints() {
@@ -589,20 +664,20 @@ final class LiveTranslateVoiceMigrationTests: XCTestCase {
 
 final class LiveTranslateAudioRoutePolicyTests: XCTestCase {
 
-  func testGlassesMicrophoneDoesNotForcePhoneSpeaker() {
+  func testGlassesMicrophoneFallsBackToSpeakerWithoutBluetooth() {
     let options = LiveTranslateService.audioSessionOptions(usePhoneMic: false)
 
     XCTAssertTrue(options.contains(.allowBluetoothHFP))
     XCTAssertTrue(options.contains(.allowBluetoothA2DP))
-    XCTAssertFalse(options.contains(.defaultToSpeaker))
+    XCTAssertTrue(options.contains(.defaultToSpeaker))
   }
 
   func testPhoneMicrophoneKeepsBluetoothPlaybackAvailable() {
     let options = LiveTranslateService.audioSessionOptions(usePhoneMic: true)
 
-    XCTAssertFalse(options.contains(.allowBluetoothHFP))
+    XCTAssertTrue(options.contains(.allowBluetoothHFP))
     XCTAssertTrue(options.contains(.allowBluetoothA2DP))
-    XCTAssertFalse(options.contains(.defaultToSpeaker))
+    XCTAssertTrue(options.contains(.defaultToSpeaker))
   }
 
   func testLiveTranslatePolicyUsesDuplexHFPForGlassesMic() {
@@ -612,17 +687,17 @@ final class LiveTranslateAudioRoutePolicyTests: XCTestCase {
     XCTAssertEqual(configuration.mode, .voiceChat)
     XCTAssertTrue(configuration.options.contains(.allowBluetoothHFP))
     XCTAssertTrue(configuration.options.contains(.allowBluetoothA2DP))
-    XCTAssertFalse(configuration.options.contains(.defaultToSpeaker))
+    XCTAssertTrue(configuration.options.contains(.defaultToSpeaker))
   }
 
-  func testLiveTranslatePolicyUsesA2DPForPhoneMic() {
+  func testLiveTranslatePolicyKeepsBluetoothOutputsForPhoneMic() {
     let configuration = LiveTranslateService.audioSessionConfiguration(usePhoneMic: true)
 
     XCTAssertEqual(configuration.category, .playAndRecord)
     XCTAssertEqual(configuration.mode, .default)
-    XCTAssertFalse(configuration.options.contains(.allowBluetoothHFP))
+    XCTAssertTrue(configuration.options.contains(.allowBluetoothHFP))
     XCTAssertTrue(configuration.options.contains(.allowBluetoothA2DP))
-    XCTAssertFalse(configuration.options.contains(.defaultToSpeaker))
+    XCTAssertTrue(configuration.options.contains(.defaultToSpeaker))
   }
 
   func testStandalonePlaybackPolicyDoesNotRequestInputProfilesOrSpeaker() {
@@ -633,7 +708,7 @@ final class LiveTranslateAudioRoutePolicyTests: XCTestCase {
     XCTAssertTrue(configuration.options.contains(.duckOthers))
     XCTAssertFalse(configuration.options.contains(.allowBluetoothHFP))
     XCTAssertFalse(configuration.options.contains(.allowBluetoothA2DP))
-    XCTAssertFalse(configuration.options.contains(.defaultToSpeaker))
+    XCTAssertTrue(configuration.options.contains(.defaultToSpeaker))
   }
 
   func testRealtimeGlassesDuplexPolicyUsesHFPOnly() {
@@ -834,6 +909,44 @@ final class LiveTranslateHistoryStorageTests: XCTestCase {
     XCTAssertEqual(remaining.map(\.id), [second.id])
     let reloadedStorage = LiveTranslateHistoryStorage(fileURL: url)
     XCTAssertEqual(reloadedStorage.loadAll().map(\.sessionID), [secondSession])
+  }
+}
+
+final class LiveTranslateSessionLifecycleTests: XCTestCase {
+
+  func testSessionCanOnlyConfigureBeforeItBecomesReady() {
+    let lifecycle = LiveTranslateSessionLifecycle()
+
+    XCTAssertTrue(lifecycle.transition(from: [.disconnected], to: .connecting))
+    XCTAssertTrue(lifecycle.transition(from: [.connecting], to: .configuring))
+    XCTAssertTrue(lifecycle.transition(from: [.configuring], to: .ready))
+    XCTAssertFalse(lifecycle.transition(from: [.configuring], to: .configuring))
+    XCTAssertEqual(lifecycle.state, .ready)
+  }
+
+  func testFinishedSessionCannotBeReusedForRecording() {
+    let lifecycle = LiveTranslateSessionLifecycle()
+
+    XCTAssertTrue(lifecycle.transition(from: [.disconnected], to: .connecting))
+    XCTAssertTrue(lifecycle.transition(from: [.connecting], to: .configuring))
+    XCTAssertTrue(lifecycle.transition(from: [.configuring], to: .ready))
+    XCTAssertTrue(lifecycle.transition(from: [.ready], to: .recording))
+    XCTAssertTrue(lifecycle.transition(from: [.recording], to: .finishing))
+    XCTAssertTrue(lifecycle.transition(from: [.finishing], to: .finished))
+    XCTAssertFalse(lifecycle.transition(from: [.ready], to: .recording))
+    XCTAssertEqual(lifecycle.state, .finished)
+  }
+
+  func testFreshConnectionMayStartAfterFinishedSession() {
+    let lifecycle = LiveTranslateSessionLifecycle()
+    XCTAssertTrue(lifecycle.transition(from: [.disconnected], to: .connecting))
+    XCTAssertTrue(lifecycle.transition(from: [.connecting], to: .configuring))
+    XCTAssertTrue(lifecycle.transition(from: [.configuring], to: .ready))
+    XCTAssertTrue(lifecycle.transition(from: [.ready], to: .finishing))
+    XCTAssertTrue(lifecycle.transition(from: [.finishing], to: .finished))
+
+    XCTAssertTrue(lifecycle.transition(from: [.finished], to: .connecting))
+    XCTAssertEqual(lifecycle.state, .connecting)
   }
 }
 
