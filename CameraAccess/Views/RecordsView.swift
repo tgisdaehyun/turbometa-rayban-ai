@@ -5,67 +5,91 @@
 
 import SwiftUI
 
+private enum RecordCategory: Int, CaseIterable, Identifiable {
+    case liveAI
+    case translation
+    case audioNote
+    case leanEat
+    case wordLearn
+    case quickVision
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .liveAI:
+            return "Live AI"
+        case .translation:
+            return "livetranslate.title".localized
+        case .audioNote:
+            return "audioNote.records.tab".localized
+        case .leanEat:
+            return "LeanEat"
+        case .wordLearn:
+            return "WordLearn"
+        case .quickVision:
+            return "quickvision.tab".localized
+        }
+    }
+}
+
 struct RecordsView: View {
-    @State private var selectedTab = 0
+    @State private var selectedCategory: RecordCategory = .liveAI
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
-                // Custom Tab Bar
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: AppSpacing.lg) {
-                        RecordTabButton(title: "Live AI", isSelected: selectedTab == 0) {
-                            selectedTab = 0
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        GlassEffectContainer(spacing: AppSpacing.sm) {
+                            HStack(spacing: AppSpacing.sm) {
+                                ForEach(RecordCategory.allCases) { category in
+                                    RecordTabButton(
+                                        title: category.title,
+                                        isSelected: selectedCategory == category
+                                    ) {
+                                        withAnimation(.snappy) {
+                                            selectedCategory = category
+                                        }
+                                    }
+                                    .id(category)
+                                }
+                            }
                         }
-
-                        RecordTabButton(title: "实时翻译", isSelected: selectedTab == 1) {
-                            selectedTab = 1
-                        }
-
-                        RecordTabButton(title: "audioNote.records.tab".localized, isSelected: selectedTab == 2) {
-                            selectedTab = 2
-                        }
-
-                        RecordTabButton(title: "LeanEat", isSelected: selectedTab == 3) {
-                            selectedTab = 3
-                        }
-
-                        RecordTabButton(title: "WordLearn", isSelected: selectedTab == 4) {
-                            selectedTab = 4
-                        }
-
-                        RecordTabButton(title: "quickvision.tab".localized, isSelected: selectedTab == 5) {
-                            selectedTab = 5
+                        .padding(.horizontal, AppSpacing.md)
+                        .padding(.vertical, AppSpacing.sm)
+                    }
+                    .onChange(of: selectedCategory) { _, category in
+                        withAnimation(.snappy) {
+                            proxy.scrollTo(category, anchor: .center)
                         }
                     }
-                    .padding(.horizontal, AppSpacing.lg)
-                    .padding(.vertical, AppSpacing.md)
                 }
-                .background(AppColors.tertiaryBackground)
 
                 // Content
-                TabView(selection: $selectedTab) {
+                TabView(selection: $selectedCategory) {
                     LiveAIRecordsView()
-                        .tag(0)
+                        .tag(RecordCategory.liveAI)
 
                     TranslationRecordsView()
-                        .tag(1)
+                        .tag(RecordCategory.translation)
 
                     AudioNoteRecordsView()
-                        .tag(2)
+                        .tag(RecordCategory.audioNote)
 
                     LeanEatRecordsView()
-                        .tag(3)
+                        .tag(RecordCategory.leanEat)
 
                     WordLearnRecordsView()
-                        .tag(4)
+                        .tag(RecordCategory.wordLearn)
 
                     QuickVisionRecordsView()
-                        .tag(5)
+                        .tag(RecordCategory.quickVision)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
             }
-            .navigationTitle("记录")
+            .navigationTitle("records.title".localized)
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }
@@ -79,30 +103,23 @@ struct RecordTabButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: AppSpacing.sm) {
-                Text(title)
-                    .font(AppTypography.subheadline)
-                    .fontWeight(isSelected ? .semibold : .regular)
-                    .foregroundColor(isSelected ? AppColors.primary : AppColors.textSecondary)
-
-                if isSelected {
-                    Rectangle()
-                        .fill(
-                            LinearGradient(
-                                colors: [AppColors.primary, AppColors.secondary],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(height: 3)
-                        .cornerRadius(1.5)
-                } else {
-                    Rectangle()
-                        .fill(Color.clear)
-                        .frame(height: 3)
-                }
-            }
+            Text(title)
+                .font(AppTypography.subheadline)
+                .fontWeight(isSelected ? .semibold : .regular)
+                .foregroundStyle(isSelected ? AppColors.primary : AppColors.textSecondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, AppSpacing.sm)
+                .frame(minHeight: 40)
         }
+        .buttonStyle(
+            .glass(
+                Glass.regular
+                    .tint(isSelected ? AppColors.primary.opacity(0.2) : nil)
+                    .interactive()
+            )
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
