@@ -312,14 +312,15 @@ enum TranslationPlaybackState: Equatable {
     case playing(responseID: String)
 }
 
-/// Buffers complete PCM payloads by response ID and advances only after the
-/// server has sent `response.audio.done`. The owner (the AVAudioPlayerNode
-/// service) calls `complete(_:)` from its `dataPlayedBack` callback, so a
-/// server completion can never interrupt local playback.
+/// Buffers streaming PCM payloads by response ID. The head response can play
+/// while audio deltas are still arriving; a later response cannot start until
+/// the head has both received `response.audio.done` and played every locally
+/// scheduled buffer.
 struct TranslationAudioResponse: Equatable {
     let responseID: String
-    var data: Data
+    var pendingData: Data
     var isServerFinished: Bool
+    var scheduledBufferCount: Int
 }
 
 struct TranslationAudioQueue {
@@ -344,8 +345,9 @@ struct TranslationAudioQueue {
               responses[responseID] == nil else { return }
         responses[responseID] = TranslationAudioResponse(
             responseID: responseID,
-            data: Data(),
-            isServerFinished: false
+            pendingData: Data(),
+            isServerFinished: false,
+            scheduledBufferCount: 0
         )
         responseOrder.append(responseID)
     }
@@ -353,21 +355,26 @@ struct TranslationAudioQueue {
     mutating func append(_ data: Data, responseID: String) {
         guard !completedResponseIDs.contains(responseID) else { return }
         register(responseID: responseID)
-        responses[responseID]?.data.append(data)
+        responses[responseID]?.pendingData.append(data)
     }
 
-    mutating func markServerFinished(_ responseID: String) {
-        guard !completedResponseIDs.contains(responseID) else { return }
+    /// Seals a response. Returns true when the active response had already
+    /// played all of its buffers and can be removed immediately.
+    @discardableResult
+    mutating func markServerFinished(_ responseID: String) -> Bool {
+        guard !completedResponseIDs.contains(responseID) else { return false }
         if responses[responseID] == nil {
             responses[responseID] = TranslationAudioResponse(
                 responseID: responseID,
-                data: Data(),
-                isServerFinished: true
+                pendingData: Data(),
+                isServerFinished: true,
+                scheduledBufferCount: 0
             )
             responseOrder.append(responseID)
         } else {
             responses[responseID]?.isServerFinished = true
         }
+        return finishActiveIfDrained(responseID)
     }
 
     /// Used only when the session-finalization watchdog expires. Any received
@@ -379,28 +386,73 @@ struct TranslationAudioQueue {
         }
     }
 
-    /// Claims the oldest sealed response for playback. Calling this while a
-    /// response is active or while the head is not server-finished is a no-op.
-    mutating func beginNextIfReady() -> TranslationAudioResponse? {
-        guard activeResponseID == nil,
-              let responseID = responseOrder.first,
+    /// Activates the oldest response as soon as it has streaming PCM, without
+    /// waiting for `audio.done`. A sealed empty response is also activated so
+    /// the owner can complete it and advance the queue.
+    mutating func activateNextIfReady() -> String? {
+        if let activeResponseID { return activeResponseID }
+        guard let responseID = responseOrder.first,
               let response = responses[responseID],
-              response.isServerFinished else {
-            return nil
-        }
+              !response.pendingData.isEmpty || response.isServerFinished else { return nil }
         activeResponseID = responseID
-        return response
+        return responseID
     }
 
-    /// Marks the active response as physically played back and removes it.
+    /// Moves all currently received PCM for the active response into one
+    /// scheduled player buffer. Later deltas remain eligible for another call.
+    mutating func takePendingAudio(_ responseID: String) -> Data? {
+        guard activeResponseID == responseID,
+              var response = responses[responseID],
+              !response.pendingData.isEmpty else { return nil }
+        let data = response.pendingData
+        response.pendingData.removeAll(keepingCapacity: true)
+        response.scheduledBufferCount += 1
+        responses[responseID] = response
+        return data
+    }
+
+    /// Marks one scheduled PCM buffer as physically played. Returns true only
+    /// when this was the final local buffer of a server-finished response.
     @discardableResult
-    mutating func complete(_ responseID: String) -> Bool {
+    mutating func markBufferPlayed(_ responseID: String) -> Bool {
+        guard activeResponseID == responseID,
+              var response = responses[responseID],
+              response.scheduledBufferCount > 0 else { return false }
+        response.scheduledBufferCount -= 1
+        responses[responseID] = response
+        return finishActiveIfDrained(responseID)
+    }
+
+    /// Completes a sealed response that contains no pending or scheduled PCM.
+    @discardableResult
+    mutating func completeActiveIfDrained(_ responseID: String) -> Bool {
+        finishActiveIfDrained(responseID)
+    }
+
+    /// Drops an active response after a local playback setup failure so one
+    /// malformed response cannot permanently block all later translations.
+    @discardableResult
+    mutating func discardActive(_ responseID: String) -> Bool {
         guard activeResponseID == responseID else { return false }
+        remove(responseID)
+        return true
+    }
+
+    private mutating func finishActiveIfDrained(_ responseID: String) -> Bool {
+        guard activeResponseID == responseID,
+              let response = responses[responseID],
+              response.isServerFinished,
+              response.pendingData.isEmpty,
+              response.scheduledBufferCount == 0 else { return false }
+        remove(responseID)
+        return true
+    }
+
+    private mutating func remove(_ responseID: String) {
         completedResponseIDs.insert(responseID)
         responses.removeValue(forKey: responseID)
         responseOrder.removeAll { $0 == responseID }
         activeResponseID = nil
-        return true
     }
 
     mutating func reset() {

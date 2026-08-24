@@ -136,9 +136,9 @@ class LiveTranslateService: NSObject {
     private var playerNode: AVAudioPlayerNode?
     private let playbackFormat = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1)
 
-    // Audio responses are buffered by response_id and played strictly in
-    // arrival order. A server-side audio.done event only seals the response;
-    // the next response starts after AVAudioPlayerNode reports dataPlayedBack.
+    // The head response streams to the player as PCM deltas arrive. Response
+    // order remains strict: the next response starts only after audio.done and
+    // dataPlayedBack have both completed for the current response.
     private var audioQueue = TranslationAudioQueue()
     private var isPlaybackEngineRunning = false
 
@@ -1055,7 +1055,7 @@ class LiveTranslateService: NSObject {
             return
         }
         audioQueue.append(audioData, responseID: responseID)
-        publishPlaybackState()
+        drainPlaybackQueue()
     }
 
     private func markAudioResponseFinished(_ responseID: String) {
@@ -1064,50 +1064,59 @@ class LiveTranslateService: NSObject {
         // session finalization would wait forever for playback that is
         // intentionally disabled.
         guard audioOutputEnabled else { return }
-        audioQueue.markServerFinished(responseID)
-        playNextResponseIfReady()
+        if audioQueue.markServerFinished(responseID) {
+            finishPlaybackResponse(responseID)
+        }
+        drainPlaybackQueue()
     }
 
-    private func playNextResponseIfReady() {
+    private func drainPlaybackQueue() {
         guard audioOutputEnabled else {
             publishPlaybackState()
             completeFinishIfReady()
             return
         }
-        guard let response = audioQueue.beginNextIfReady() else {
+        guard let responseID = audioQueue.activateNextIfReady() else {
             publishPlaybackState()
             completeFinishIfReady()
             return
         }
 
-        let responseID = response.responseID
         publishPlaybackState()
 
-        guard ensureDuplexAudioSessionForPlayback() else {
-            completePlayback(responseID)
+        // A server may legitimately finish a response without audio bytes.
+        if audioQueue.completeActiveIfDrained(responseID) {
+            finishPlaybackResponse(responseID)
+            drainPlaybackQueue()
             return
         }
 
-        if !isPlaybackEngineRunning && !startPlaybackEngine() {
-            completePlayback(responseID)
+        guard let audioData = audioQueue.takePendingAudio(responseID) else {
+            completeFinishIfReady()
             return
+        }
+
+        if !isPlaybackEngineRunning {
+            guard ensureDuplexAudioSessionForPlayback(), startPlaybackEngine() else {
+                discardPlaybackResponse(responseID)
+                return
+            }
         }
 
         guard let playerNode = playerNode,
               let playbackFormat = playbackFormat else {
-            completePlayback(responseID)
+            discardPlaybackResponse(responseID)
             return
         }
 
-        guard !response.data.isEmpty,
-              let pcmBuffer = createPCMBuffer(from: response.data, format: playbackFormat) else {
-            completePlayback(responseID)
+        guard let pcmBuffer = createPCMBuffer(from: audioData, format: playbackFormat) else {
+            discardPlaybackResponse(responseID)
             return
         }
 
         playerNode.scheduleBuffer(pcmBuffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             DispatchQueue.main.async {
-                self?.completePlayback(responseID)
+                self?.completePlaybackBuffer(responseID)
             }
         }
         if !playerNode.isPlaying {
@@ -1115,11 +1124,25 @@ class LiveTranslateService: NSObject {
         }
     }
 
-    private func completePlayback(_ responseID: String) {
-        guard audioQueue.complete(responseID) else { return }
+    private func completePlaybackBuffer(_ responseID: String) {
+        if audioQueue.markBufferPlayed(responseID) {
+            finishPlaybackResponse(responseID)
+        }
+        publishPlaybackState()
+        drainPlaybackQueue()
+    }
+
+    private func finishPlaybackResponse(_ responseID: String) {
         onPlaybackCompleted?(responseID)
         publishPlaybackState()
-        playNextResponseIfReady()
+        completeFinishIfReady()
+    }
+
+    private func discardPlaybackResponse(_ responseID: String) {
+        guard audioQueue.discardActive(responseID) else { return }
+        onPlaybackCompleted?(responseID)
+        publishPlaybackState()
+        drainPlaybackQueue()
     }
 
     private func cancelPlaybackQueue() {

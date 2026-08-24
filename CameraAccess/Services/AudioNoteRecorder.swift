@@ -9,6 +9,7 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
     @Published private(set) var isPaused = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var level: Float = 0
+    @Published private(set) var meterSamples: [Float] = Array(repeating: 0.04, count: 42)
     @Published private(set) var activeInput: AudioNoteInput?
     @Published private(set) var activeInputName: String?
     @Published private(set) var isGlassesInputAvailable = false
@@ -20,6 +21,9 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
     private var timer: Timer?
     private var interruptionObserver: NSObjectProtocol?
     private var routeObserver: NSObjectProtocol?
+    private var accumulatedElapsed: TimeInterval = 0
+    private var recordingStartedAt: TimeInterval?
+    private var didReachMaximumDuration = false
 
     override init() {
         super.init()
@@ -96,23 +100,33 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
         activeInput = input
         elapsed = 0
         level = 0
+        meterSamples = Array(repeating: 0.04, count: 42)
+        accumulatedElapsed = 0
+        recordingStartedAt = ProcessInfo.processInfo.systemUptime
+        didReachMaximumDuration = false
         isRecording = true
         isPaused = false
         startTimer()
     }
 
     func pause() {
+        guard isRecording, !isPaused else { return }
+        updateElapsedClock()
+        accumulatedElapsed = elapsed
+        recordingStartedAt = nil
         recorder?.pause()
         isPaused = true
     }
 
     func resume() {
         guard recorder?.record() == true else { return }
+        recordingStartedAt = ProcessInfo.processInfo.systemUptime
         isPaused = false
     }
 
     @discardableResult
     func stop() -> TimeInterval {
+        updateElapsedClock()
         let duration = elapsed
         // Mark the session stopped before AVAudioRecorder dispatches its delegate
         // callback so a user-initiated stop cannot be mistaken for the time limit.
@@ -122,6 +136,8 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
         timer?.invalidate()
         timer = nil
         isPaused = false
+        recordingStartedAt = nil
+        accumulatedElapsed = duration
         activeInput = nil
         activeInputName = nil
         let session = AVAudioSession.sharedInstance()
@@ -132,16 +148,49 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
 
     private func startTimer() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let recorder = self.recorder else { return }
-                self.elapsed = recorder.currentTime
-                recorder.updateMeters()
-                self.level = max(0, min(1, (recorder.averagePower(forChannel: 0) + 55) / 55))
-                if self.elapsed >= Self.maximumDuration - 0.2 {
+                self.updateElapsedClock()
+                self.updateMeter(recorder)
+                if self.elapsed >= Self.maximumDuration, !self.didReachMaximumDuration {
+                    self.didReachMaximumDuration = true
                     self.onMaximumDuration?()
                 }
             }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func updateElapsedClock(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard isRecording || recordingStartedAt != nil else { return }
+        if let recordingStartedAt, !isPaused {
+            elapsed = min(Self.maximumDuration, accumulatedElapsed + max(0, now - recordingStartedAt))
+        } else {
+            elapsed = min(Self.maximumDuration, accumulatedElapsed)
+        }
+    }
+
+    private func updateMeter(_ recorder: AVAudioRecorder) {
+        let nextLevel: Float
+        if isPaused {
+            nextLevel = max(0.025, level * 0.72)
+        } else {
+            recorder.updateMeters()
+            let average = recorder.averagePower(forChannel: 0)
+            let peak = recorder.peakPower(forChannel: 0)
+            // Convert the logarithmic dB values into a visually useful 0...1
+            // range. Peak adds responsiveness while smoothing avoids jitter.
+            let averageLinear = pow(max(0, min(1, (average + 60) / 60)), 0.72)
+            let peakLinear = pow(max(0, min(1, (peak + 60) / 60)), 0.72)
+            let measured = max(0.025, min(1, averageLinear * 0.72 + peakLinear * 0.28))
+            nextLevel = level * 0.58 + measured * 0.42
+        }
+        level = nextLevel
+        meterSamples.append(nextLevel)
+        if meterSamples.count > 42 {
+            meterSamples.removeFirst(meterSamples.count - 42)
         }
     }
 

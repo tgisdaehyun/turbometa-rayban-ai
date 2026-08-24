@@ -733,25 +733,41 @@ final class LiveTranslateAudioQueueTests: XCTestCase {
     queue.markServerFinished("response-a")
     queue.markServerFinished("response-b")
 
-    XCTAssertEqual(queue.beginNextIfReady()?.responseID, "response-a")
-    XCTAssertTrue(queue.complete("response-a"))
-    XCTAssertEqual(queue.beginNextIfReady()?.responseID, "response-b")
+    XCTAssertEqual(queue.activateNextIfReady(), "response-a")
+    XCTAssertEqual(queue.takePendingAudio("response-a"), Data([1, 2]))
+    XCTAssertTrue(queue.markBufferPlayed("response-a"))
+    XCTAssertEqual(queue.activateNextIfReady(), "response-b")
+    XCTAssertEqual(queue.takePendingAudio("response-b"), Data([3, 4]))
   }
 
-  func testResponseAudioDoneDoesNotCompleteUntilDataPlayedBack() {
+  func testHeadResponseStreamsBeforeAudioDoneAndStillBlocksLaterResponse() {
     var queue = TranslationAudioQueue()
     queue.append(Data([1, 2]), responseID: "response-a")
     queue.append(Data([3, 4]), responseID: "response-b")
     queue.markServerFinished("response-b")
 
-    XCTAssertNil(queue.beginNextIfReady(), "The head response must wait for audio.done")
+    XCTAssertEqual(queue.activateNextIfReady(), "response-a")
+    XCTAssertEqual(queue.takePendingAudio("response-a"), Data([1, 2]))
+    XCTAssertFalse(queue.markBufferPlayed("response-a"), "Playback alone cannot finish an open response")
+    XCTAssertEqual(queue.activateNextIfReady(), "response-a", "A later response cannot start early")
 
-    queue.markServerFinished("response-a")
-    XCTAssertEqual(queue.beginNextIfReady()?.responseID, "response-a")
+    XCTAssertTrue(queue.markServerFinished("response-a"))
     XCTAssertEqual(queue.pendingCount, 1)
-    XCTAssertFalse(queue.complete("response-b"), "A later response cannot complete early")
-    XCTAssertTrue(queue.complete("response-a"))
-    XCTAssertEqual(queue.beginNextIfReady()?.responseID, "response-b")
+    XCTAssertEqual(queue.activateNextIfReady(), "response-b")
+  }
+
+  func testAudioDoneWaitsForEveryScheduledStreamingBuffer() {
+    var queue = TranslationAudioQueue()
+    queue.append(Data([1, 2]), responseID: "response-a")
+    XCTAssertEqual(queue.activateNextIfReady(), "response-a")
+    XCTAssertNotNil(queue.takePendingAudio("response-a"))
+    queue.append(Data([3, 4]), responseID: "response-a")
+    XCTAssertNotNil(queue.takePendingAudio("response-a"))
+
+    XCTAssertFalse(queue.markServerFinished("response-a"))
+    XCTAssertFalse(queue.markBufferPlayed("response-a"))
+    XCTAssertTrue(queue.markBufferPlayed("response-a"))
+    XCTAssertTrue(queue.isEmpty)
   }
 }
 

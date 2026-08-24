@@ -381,6 +381,10 @@
 "records.translation.empty" = "No translation sessions";
 "records.translation.empty.hint" = "Completed Live Translate sessions will appear here";
 "records.translation.delete" = "Delete session";
+"records.liveAI.messageCount" = "%d messages";
+"records.delete.title" = "Delete record?";
+"records.delete.message" = "This record will be permanently deleted and cannot be recovered.";
+"records.delete.confirm" = "Delete";
 "records.translation.mixedDirection" = "Multiple language directions";
 "records.translation.turnCount" = "%d turns";
 "records.translation.detail.title" = "Translation Details";
@@ -493,6 +497,9 @@
 "audioNote.language" = "Recording Language";
 "audioNote.language.auto" = "Auto Detect";
 "audioNote.remaining" = "%@ remaining";
+"audioNote.elapsed" = "RECORDED";
+"audioNote.remainingTitle" = "REMAINING";
+"audioNote.waveform" = "Live recording waveform";
 "audioNote.viewRecord" = "View";
 "audioNote.defaultTitle" = "Recording %@";
 "audioNote.error.title" = "Recording Error";

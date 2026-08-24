@@ -5,6 +5,8 @@ import UIKit
 struct AudioNoteRecordsView: View {
     @ObservedObject private var library = AudioNoteLibrary.shared
     @State private var selectedNote: AudioNote?
+    @State private var notePendingDeletion: AudioNote?
+    @State private var showsDeleteConfirmation = false
 
     var body: some View {
         Group {
@@ -15,24 +17,49 @@ struct AudioNoteRecordsView: View {
                     Text("audioNote.records.emptyDetail".localized).foregroundStyle(.secondary)
                 }
             } else {
-                List {
+                ScrollView {
+                    LazyVStack(spacing: AppSpacing.md) {
                     ForEach(library.notes) { note in
                         AudioNoteRow(note: note)
                             .contentShape(Rectangle())
                             .onTapGesture { selectedNote = note }
-                            .swipeActions {
-                                Button(role: .destructive) { library.delete(note.id) } label: {
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    notePendingDeletion = note
+                                    showsDeleteConfirmation = true
+                                } label: {
                                     Label("common.delete".localized, systemImage: "trash")
                                 }
                             }
                     }
+                    }
+                    .padding(AppSpacing.md)
                 }
-                .listStyle(.plain)
                 .refreshable { library.reload() }
             }
         }
+        .background(AppColors.secondaryBackground.ignoresSafeArea())
         .onAppear { library.reload() }
-        .sheet(item: $selectedNote) { note in AudioNoteDetailView(noteID: note.id) }
+        .confirmationDialog(
+            "records.delete.title".localized,
+            isPresented: $showsDeleteConfirmation
+        ) {
+            Button("records.delete.confirm".localized, role: .destructive) {
+                guard let notePendingDeletion else { return }
+                library.delete(notePendingDeletion.id)
+                self.notePendingDeletion = nil
+            }
+            Button("common.cancel".localized, role: .cancel) {
+                notePendingDeletion = nil
+            }
+        } message: {
+            Text("records.delete.message".localized)
+        }
+        .sheet(item: $selectedNote) { note in
+            AudioNoteDetailView(noteID: note.id) {
+                selectedNote = nil
+            }
+        }
     }
 }
 
@@ -40,27 +67,41 @@ private struct AudioNoteRow: View {
     let note: AudioNote
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: "waveform.badge.mic").foregroundStyle(.red)
-                Text(note.title).font(.headline).lineLimit(1)
-                Spacer()
-                if note.status.isProcessing { ProgressView().controlSize(.small) }
-                Text("audioNote.status.\(note.status.rawValue)".localized)
-                    .font(.caption).foregroundStyle(note.status == .failed ? .red : .secondary)
-            }
-            Text(note.transcript.isEmpty ? "audioNote.records.noTranscript".localized : note.transcript)
-                .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-            HStack(spacing: 14) {
-                Label(note.createdAt.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
-                Label(formatDuration(note.duration), systemImage: "clock")
-                if note.speakerCount > 0 {
-                    Label("\(note.speakerCount)", systemImage: "person.2")
-                }
-            }
-            .font(.caption).foregroundStyle(.secondary)
+        UnifiedRecordCard(
+            icon: "waveform.badge.mic",
+            tint: .red,
+            title: note.title,
+            summary: note.transcript.isEmpty ? "audioNote.records.noTranscript".localized : note.transcript,
+            metadata: metadata,
+            badge: RecordCardBadge(
+                text: "audioNote.status.\(note.status.rawValue)".localized,
+                color: statusColor
+            )
+        )
+    }
+
+    private var metadata: [RecordCardMetadata] {
+        var values = [
+            RecordCardMetadata(
+                icon: "clock",
+                text: note.createdAt.formatted(date: .abbreviated, time: .shortened)
+            ),
+            RecordCardMetadata(icon: "timer", text: formatDuration(note.duration))
+        ]
+        if note.speakerCount > 0 {
+            values.append(RecordCardMetadata(icon: "person.2", text: "\(note.speakerCount)"))
         }
-        .padding(.vertical, 8)
+        return values
+    }
+
+    private var statusColor: Color {
+        switch note.status {
+        case .failed: return .red
+        case .completed: return .green
+        case .uploading, .transcribing, .organizing: return .orange
+        case .recording: return .red
+        case .saved: return AppColors.textSecondary
+        }
     }
 }
 
@@ -68,12 +109,19 @@ struct AudioNoteDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var library = AudioNoteLibrary.shared
     let noteID: UUID
+    let onDelete: (() -> Void)?
     @StateObject private var player = AudioNotePlayer()
     @State private var draftTitle = ""
     @State private var shareItems: [Any] = []
     @State private var showShare = false
     @State private var speakerBeingRenamed: Int?
     @State private var speakerNameDraft = ""
+    @State private var confirmsDeletion = false
+
+    init(noteID: UUID, onDelete: (() -> Void)? = nil) {
+        self.noteID = noteID
+        self.onDelete = onDelete
+    }
 
     private var note: AudioNote? { library.note(id: noteID) }
 
@@ -109,7 +157,13 @@ struct AudioNoteDetailView: View {
             }
             .navigationTitle("audioNote.detail.title".localized)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("common.done".localized) { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
                 if let note {
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
@@ -119,6 +173,14 @@ struct AudioNoteDetailView: View {
                         } label: { Image(systemName: "square.and.arrow.up") }
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(role: .destructive) {
+                        confirmsDeletion = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .tint(.red)
+                }
             }
             .onAppear {
                 guard let note else { return }
@@ -127,6 +189,20 @@ struct AudioNoteDetailView: View {
             }
             .onDisappear { player.stop() }
             .sheet(isPresented: $showShare) { AudioNoteShareSheet(items: shareItems) }
+            .confirmationDialog(
+                "records.delete.title".localized,
+                isPresented: $confirmsDeletion
+            ) {
+                Button("records.delete.confirm".localized, role: .destructive) {
+                    player.stop()
+                    library.delete(noteID)
+                    onDelete?()
+                    dismiss()
+                }
+                Button("common.cancel".localized, role: .cancel) {}
+            } message: {
+                Text("records.delete.message".localized)
+            }
             .alert("audioNote.playback.errorTitle".localized, isPresented: Binding(
                 get: { player.errorMessage != nil },
                 set: { if !$0 { player.errorMessage = nil } }
@@ -328,7 +404,6 @@ private enum AudioNotePlaybackError: LocalizedError {
         }
     }
 }
-
 enum SRTExporter {
     static func export(_ segments: [AudioTranscriptSegment]) -> String {
         segments.enumerated().map { index, segment in

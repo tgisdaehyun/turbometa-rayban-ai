@@ -7,10 +7,12 @@ import SwiftUI
 
 struct ConversationDetailView: View {
     let conversation: ConversationRecord
+    let onDelete: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmsDeletion = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 AppColors.secondaryBackground
                     .ignoresSafeArea()
@@ -28,11 +30,33 @@ struct ConversationDetailView: View {
             .navigationTitle("对话详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("完成") {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
                         dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(role: .destructive) {
+                        confirmsDeletion = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .tint(.red)
+                }
+            }
+            .confirmationDialog(
+                "records.delete.title".localized,
+                isPresented: $confirmsDeletion
+            ) {
+                Button("records.delete.confirm".localized, role: .destructive) {
+                    onDelete()
+                    dismiss()
+                }
+                Button("common.cancel".localized, role: .cancel) {}
+            } message: {
+                Text("records.delete.message".localized)
             }
             .safeAreaInset(edge: .bottom) {
                 // Conversation info

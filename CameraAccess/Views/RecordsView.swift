@@ -106,12 +106,89 @@ struct RecordTabButton: View {
     }
 }
 
+// MARK: - Shared Record Card
+
+struct RecordCardMetadata: Identifiable {
+    let icon: String
+    let text: String
+
+    var id: String { "\(icon)-\(text)" }
+}
+
+struct RecordCardBadge {
+    let text: String
+    let color: Color
+}
+
+/// Shared visual language for the three implemented record categories.
+struct UnifiedRecordCard: View {
+    let icon: String
+    let tint: Color
+    let title: String
+    let summary: String
+    let metadata: [RecordCardMetadata]
+    var badge: RecordCardBadge?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
+            HStack(spacing: AppSpacing.sm) {
+                Image(systemName: icon)
+                    .foregroundColor(tint)
+                    .font(AppTypography.headline)
+
+                Text(title)
+                    .font(AppTypography.headline)
+                    .foregroundColor(AppColors.textPrimary)
+                    .lineLimit(1)
+
+                Spacer(minLength: AppSpacing.sm)
+
+                if let badge {
+                    Text(badge.text)
+                        .font(AppTypography.caption)
+                        .foregroundColor(badge.color)
+                        .padding(.horizontal, AppSpacing.sm)
+                        .padding(.vertical, AppSpacing.xs)
+                        .background(badge.color.opacity(0.13), in: Capsule())
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(AppTypography.caption)
+                    .foregroundColor(AppColors.textTertiary)
+            }
+
+            if !summary.isEmpty {
+                Text(summary)
+                    .font(AppTypography.subheadline)
+                    .foregroundColor(AppColors.textSecondary)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: AppSpacing.md) {
+                ForEach(metadata) { item in
+                    Label(item.text, systemImage: item.icon)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .font(AppTypography.caption)
+            .foregroundColor(AppColors.textSecondary)
+        }
+        .padding(AppSpacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColors.tertiaryBackground)
+        .cornerRadius(AppCornerRadius.lg)
+        .shadow(color: AppShadow.small(), radius: 4, x: 0, y: 2)
+    }
+}
+
 // MARK: - Live AI Records
 
 struct LiveAIRecordsView: View {
     @StateObject private var viewModel = ConversationListViewModel()
     @State private var selectedConversation: ConversationRecord?
-    @State private var showDetail = false
+    @State private var conversationPendingDeletion: ConversationRecord?
+    @State private var showsDeleteConfirmation = false
 
     var body: some View {
         ZStack {
@@ -143,13 +220,13 @@ struct LiveAIRecordsView: View {
                             ConversationCell(conversation: conversation)
                                 .onTapGesture {
                                     selectedConversation = conversation
-                                    showDetail = true
                                 }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                .contextMenu {
                                     Button(role: .destructive) {
-                                        viewModel.deleteConversation(conversation.id)
+                                        conversationPendingDeletion = conversation
+                                        showsDeleteConfirmation = true
                                     } label: {
-                                        Label("删除", systemImage: "trash")
+                                        Label("common.delete".localized, systemImage: "trash")
                                     }
                                 }
                         }
@@ -164,9 +241,25 @@ struct LiveAIRecordsView: View {
         .onAppear {
             viewModel.loadConversations()
         }
-        .sheet(isPresented: $showDetail) {
-            if let conversation = selectedConversation {
-                ConversationDetailView(conversation: conversation)
+        .confirmationDialog(
+            "records.delete.title".localized,
+            isPresented: $showsDeleteConfirmation
+        ) {
+            Button("records.delete.confirm".localized, role: .destructive) {
+                guard let conversationPendingDeletion else { return }
+                viewModel.deleteConversation(conversationPendingDeletion.id)
+                self.conversationPendingDeletion = nil
+            }
+            Button("common.cancel".localized, role: .cancel) {
+                conversationPendingDeletion = nil
+            }
+        } message: {
+            Text("records.delete.message".localized)
+        }
+        .sheet(item: $selectedConversation) { conversation in
+            ConversationDetailView(conversation: conversation) {
+                viewModel.deleteConversation(conversation.id)
+                selectedConversation = nil
             }
         }
     }
@@ -195,58 +288,19 @@ struct ConversationCell: View {
     let conversation: ConversationRecord
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AppSpacing.sm) {
-            // Header
-            HStack {
-                Image(systemName: "brain.head.profile")
-                    .foregroundColor(AppColors.liveAI)
-                    .font(AppTypography.headline)
-
-                Text(conversation.title)
-                    .font(AppTypography.headline)
-                    .foregroundColor(AppColors.textPrimary)
-                    .lineLimit(1)
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(AppTypography.caption)
-                    .foregroundColor(AppColors.textTertiary)
-            }
-
-            // Summary
-            if !conversation.summary.isEmpty {
-                Text(conversation.summary)
-                    .font(AppTypography.subheadline)
-                    .foregroundColor(AppColors.textSecondary)
-                    .lineLimit(2)
-            }
-
-            // Footer
-            HStack(spacing: AppSpacing.md) {
-                HStack(spacing: AppSpacing.xs) {
-                    Image(systemName: "clock")
-                        .font(AppTypography.caption)
-                    Text(conversation.formattedDate)
-                        .font(AppTypography.caption)
-                }
-                .foregroundColor(AppColors.textSecondary)
-
-                HStack(spacing: AppSpacing.xs) {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(AppTypography.caption)
-                    Text("\(conversation.messageCount) 条消息")
-                        .font(AppTypography.caption)
-                }
-                .foregroundColor(AppColors.textSecondary)
-
-                Spacer()
-            }
-        }
-        .padding(AppSpacing.md)
-        .background(AppColors.tertiaryBackground)
-        .cornerRadius(AppCornerRadius.lg)
-        .shadow(color: AppShadow.small(), radius: 4, x: 0, y: 2)
+        UnifiedRecordCard(
+            icon: "brain.head.profile",
+            tint: AppColors.liveAI,
+            title: conversation.title,
+            summary: conversation.summary,
+            metadata: [
+                RecordCardMetadata(icon: "clock", text: conversation.formattedDate),
+                RecordCardMetadata(
+                    icon: "bubble.left.and.bubble.right",
+                    text: String(format: "records.liveAI.messageCount".localized, conversation.messageCount)
+                )
+            ]
+        )
     }
 }
 
@@ -255,6 +309,8 @@ struct ConversationCell: View {
 struct TranslationRecordsView: View {
     @StateObject private var viewModel = TranslationHistoryViewModel()
     @State private var selectedSession: TranslationSession?
+    @State private var sessionPendingDeletion: TranslationSession?
+    @State private var showsDeleteConfirmation = false
 
     var body: some View {
         Group {
@@ -262,32 +318,26 @@ struct TranslationRecordsView: View {
                 translationEmptyState
                     .frame(maxWidth: .infinity)
             } else {
-                List {
+                ScrollView {
+                    LazyVStack(spacing: AppSpacing.md) {
                     ForEach(viewModel.sessions) { session in
                         TranslationSessionCell(session: session)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 selectedSession = session
                             }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            .contextMenu {
                                 Button(role: .destructive) {
-                                    viewModel.delete(session: session)
+                                    sessionPendingDeletion = session
+                                    showsDeleteConfirmation = true
                                 } label: {
-                                    Label("records.translation.delete".localized, systemImage: "trash")
+                                    Label("common.delete".localized, systemImage: "trash")
                                 }
                             }
-                            .listRowInsets(EdgeInsets(
-                                top: AppSpacing.sm,
-                                leading: AppSpacing.md,
-                                bottom: AppSpacing.sm,
-                                trailing: AppSpacing.md
-                            ))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
                     }
+                    }
+                    .padding(AppSpacing.md)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
             }
         }
         .background(AppColors.secondaryBackground.ignoresSafeArea())
@@ -300,8 +350,26 @@ struct TranslationRecordsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .liveTranslateHistoryDidChange)) { _ in
             viewModel.load()
         }
+        .confirmationDialog(
+            "records.delete.title".localized,
+            isPresented: $showsDeleteConfirmation
+        ) {
+            Button("records.delete.confirm".localized, role: .destructive) {
+                guard let sessionPendingDeletion else { return }
+                viewModel.delete(session: sessionPendingDeletion)
+                self.sessionPendingDeletion = nil
+            }
+            Button("common.cancel".localized, role: .cancel) {
+                sessionPendingDeletion = nil
+            }
+        } message: {
+            Text("records.delete.message".localized)
+        }
         .sheet(item: $selectedSession) { session in
-            TranslationSessionDetailView(session: session)
+            TranslationSessionDetailView(session: session) {
+                viewModel.delete(session: session)
+                selectedSession = nil
+            }
         }
     }
 
@@ -352,45 +420,22 @@ struct TranslationSessionCell: View {
     let session: TranslationSession
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AppSpacing.sm) {
-            HStack(alignment: .firstTextBaseline, spacing: AppSpacing.sm) {
-                Image(systemName: "text.bubble.fill")
-                    .foregroundColor(AppColors.translate)
-                    .font(AppTypography.headline)
-
-                Text(directionText)
-                    .font(AppTypography.headline)
-                    .foregroundColor(AppColors.textPrimary)
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(AppTypography.caption)
-                    .foregroundColor(AppColors.textTertiary)
-            }
-
-            if !session.previewText.isEmpty {
-                Text(session.previewText)
-                    .font(AppTypography.subheadline)
-                    .foregroundColor(AppColors.textSecondary)
-                    .lineLimit(2)
-            }
-
-            HStack(spacing: AppSpacing.md) {
-                Label(session.startDate.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
-                Label(
-                    String(format: "records.translation.turnCount".localized, session.turnCount),
-                    systemImage: "text.quote"
+        UnifiedRecordCard(
+            icon: "text.bubble.fill",
+            tint: AppColors.translate,
+            title: directionText,
+            summary: session.previewText,
+            metadata: [
+                RecordCardMetadata(
+                    icon: "clock",
+                    text: session.startDate.formatted(date: .abbreviated, time: .shortened)
+                ),
+                RecordCardMetadata(
+                    icon: "text.quote",
+                    text: String(format: "records.translation.turnCount".localized, session.turnCount)
                 )
-            }
-            .font(AppTypography.caption)
-            .foregroundColor(AppColors.textSecondary)
-        }
-        .padding(AppSpacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppColors.tertiaryBackground)
-        .cornerRadius(AppCornerRadius.lg)
-        .shadow(color: AppShadow.small(), radius: 4, x: 0, y: 2)
+            ]
+        )
     }
 
     private var directionText: String {
@@ -409,9 +454,11 @@ struct TranslationSessionCell: View {
 struct TranslationSessionDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let session: TranslationSession
+    let onDelete: () -> Void
+    @State private var confirmsDeletion = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: AppSpacing.lg) {
                     sessionSummary
@@ -428,11 +475,33 @@ struct TranslationSessionDetailView: View {
             .navigationTitle("records.translation.detail.title".localized)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("common.done".localized) {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
                         dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(role: .destructive) {
+                        confirmsDeletion = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .tint(.red)
+                }
+            }
+            .confirmationDialog(
+                "records.delete.title".localized,
+                isPresented: $confirmsDeletion
+            ) {
+                Button("records.delete.confirm".localized, role: .destructive) {
+                    onDelete()
+                    dismiss()
+                }
+                Button("common.cancel".localized, role: .cancel) {}
+            } message: {
+                Text("records.delete.message".localized)
             }
         }
     }

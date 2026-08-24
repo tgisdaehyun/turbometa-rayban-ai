@@ -381,6 +381,10 @@
 "records.translation.empty" = "暂无翻译会话";
 "records.translation.empty.hint" = "完成实时翻译后，会话记录会显示在这里";
 "records.translation.delete" = "删除会话";
+"records.liveAI.messageCount" = "%d 条消息";
+"records.delete.title" = "删除记录？";
+"records.delete.message" = "该记录将被永久删除，且无法恢复。";
+"records.delete.confirm" = "删除";
 "records.translation.mixedDirection" = "多语言会话";
 "records.translation.turnCount" = "%d 句";
 "records.translation.detail.title" = "翻译详情";
@@ -493,6 +497,9 @@
 "audioNote.language" = "录音语言";
 "audioNote.language.auto" = "自动识别";
 "audioNote.remaining" = "剩余 %@";
+"audioNote.elapsed" = "已录音时间";
+"audioNote.remainingTitle" = "剩余时间";
+"audioNote.waveform" = "实时录音波形";
 "audioNote.viewRecord" = "查看";
 "audioNote.defaultTitle" = "录音 %@";
 "audioNote.error.title" = "录音错误";

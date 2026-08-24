@@ -139,12 +139,7 @@ struct AudioNoteView: View {
     }
 
     private var timer: some View {
-        VStack(spacing: 8) {
-            Text(formatDuration(viewModel.recorder.elapsed))
-                .font(.system(size: 52, weight: .medium, design: .monospaced))
-            Text(String(format: "audioNote.remaining".localized, formatDuration(AudioNoteRecorder.maximumDuration - viewModel.recorder.elapsed)))
-                .foregroundStyle(.secondary)
-        }
+        AudioNoteTimer(recorder: viewModel.recorder)
     }
 
     private var controls: some View {
@@ -176,20 +171,63 @@ struct AudioNoteView: View {
     }
 }
 
+private struct AudioNoteTimer: View {
+    @ObservedObject var recorder: AudioNoteRecorder
+
+    var body: some View {
+        HStack(spacing: 12) {
+            timeMetric(
+                title: "audioNote.elapsed".localized,
+                value: formatDuration(recorder.elapsed),
+                color: .white
+            )
+            timeMetric(
+                title: "audioNote.remainingTitle".localized,
+                value: formatDuration(AudioNoteRecorder.maximumDuration - recorder.elapsed),
+                color: .secondary
+            )
+        }
+    }
+
+    private func timeMetric(title: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 27, weight: .semibold, design: .monospaced))
+                .foregroundStyle(color)
+                .contentTransition(.numericText())
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(15)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
 private struct AudioNoteMeter: View {
     @ObservedObject var recorder: AudioNoteRecorder
 
     var body: some View {
-        HStack(alignment: .center, spacing: 5) {
-            ForEach(0..<24, id: \.self) { index in
-                let factor = 0.25 + Double((index % 7)) / 8
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(Array(recorder.meterSamples.enumerated()), id: \.offset) { _, sample in
                 Capsule()
-                    .fill(recorder.isRecording ? Color.red : Color.gray)
-                    .frame(width: 5, height: 8 + 52 * CGFloat(Double(recorder.level) * factor))
+                    .fill(waveformColor)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(4, 72 * CGFloat(sample)))
             }
         }
-        .frame(height: 64)
-        .animation(.linear(duration: 0.1), value: recorder.level)
+        .frame(maxWidth: .infinity)
+        .frame(height: 76)
+        .padding(.horizontal, 4)
+        .accessibilityLabel("audioNote.waveform".localized)
+        .animation(.linear(duration: 0.05), value: recorder.meterSamples)
+    }
+
+    private var waveformColor: Color {
+        guard recorder.isRecording else { return .gray.opacity(0.55) }
+        return recorder.isPaused ? .orange.opacity(0.75) : .red
     }
 }
 
