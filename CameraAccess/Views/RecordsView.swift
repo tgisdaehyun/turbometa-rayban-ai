@@ -44,7 +44,17 @@ struct RecordSelectAllRequest {
 
 enum RecordsLayout {
     static let categoryBarHeight: CGFloat = 56
+    static let listTopInset = categoryBarHeight + AppSpacing.md
     static let bottomContentPadding: CGFloat = 96
+}
+
+extension View {
+    /// Applies the top spacing needed for a records list below the floating category bar.
+    func recordsListTopSpacing() -> some View {
+        self
+            .safeAreaPadding(.top, RecordsLayout.listTopInset)
+            .padding(.top, RecordsLayout.listTopInset)
+    }
 }
 
 struct RecordListScrollOffsetPreferenceKey: PreferenceKey {
@@ -163,7 +173,7 @@ struct RecordsView: View {
 //                        .background {
 //                            if recordsScrollOffset < RecordsLayout.categoryBarHeight + AppSpacing.md {
 //                                Rectangle()
-//                                    .fill(.ultraThinMaterial)
+//                                    .fill(.linearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom))
 //                            } else {
 //                                Color.clear
 //                            }
@@ -428,13 +438,11 @@ struct LiveAIRecordsView: View {
                     .padding(.horizontal, AppSpacing.md)
                     .padding(.bottom, RecordsLayout.bottomContentPadding)
                 }
-                .safeAreaPadding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+                .recordsListTopSpacing()
 
                 .refreshable {
                     viewModel.loadConversations()
                 }
-                .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
-
             }
         }
 //        .ignoresSafeArea(edges: .bottom)
@@ -587,13 +595,11 @@ struct TranslationRecordsView: View {
                         }
                     }
                     .padding(.horizontal, AppSpacing.md)
-//                    .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
                     .padding(.bottom, RecordsLayout.bottomContentPadding)
                 }
             }
         }
-        .safeAreaPadding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
-        .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+        .recordsListTopSpacing()
 
         .background(Color.black.ignoresSafeArea())
 //        .ignoresSafeArea(edges: .bottom)
@@ -964,7 +970,6 @@ struct QuickVisionRecordsView: View {
                         }
                     }
                     .padding(.horizontal, AppSpacing.md)
-//                    .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
                     .padding(.bottom, RecordsLayout.bottomContentPadding)
                 }
                 .refreshable {
@@ -972,8 +977,7 @@ struct QuickVisionRecordsView: View {
                 }
             }
         }
-        .safeAreaPadding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
-        .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+        .recordsListTopSpacing()
 
         .ignoresSafeArea(edges: .bottom)
         .onAppear {

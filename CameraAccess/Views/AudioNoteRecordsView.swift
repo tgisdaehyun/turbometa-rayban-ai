@@ -52,14 +52,12 @@ struct AudioNoteRecordsView: View {
                         }
                     }
                     .padding(.horizontal, AppSpacing.md)
-//                    .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
                     .padding(.bottom, RecordsLayout.bottomContentPadding)
                 }
                 .refreshable { library.reload() }
             }
         }
-        .safeAreaPadding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
-        .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+        .recordsListTopSpacing()
 
         .background(Color.black.ignoresSafeArea())
 //        .ignoresSafeArea(edges: .bottom)
