@@ -549,3 +549,7 @@
 "audioNote.status.completed" = "已完成";
 "audioNote.status.failed" = "失败";
 "common.delete" = "删除";
+"records.select" = "选择";
+"records.selectAll" = "全选";
+"records.batchDelete.title" = "删除选中的记录？";
+"records.batchDelete.message" = "选中的记录将被永久删除，且无法恢复。";

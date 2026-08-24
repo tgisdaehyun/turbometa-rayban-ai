@@ -3,6 +3,8 @@ import SwiftUI
 import UIKit
 
 struct AudioNoteRecordsView: View {
+    @Binding var isSelectionMode: Bool
+    @Binding var selectedIDs: Set<UUID>
     @ObservedObject private var library = AudioNoteLibrary.shared
     @State private var selectedNote: AudioNote?
     @State private var notePendingDeletion: AudioNote?
@@ -19,27 +21,59 @@ struct AudioNoteRecordsView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: AppSpacing.md) {
-                    ForEach(library.notes) { note in
-                        AudioNoteRow(note: note)
+                        RecordListScrollMarker(category: .audioNote)
+
+                        ForEach(library.notes) { note in
+                            HStack(spacing: AppSpacing.sm) {
+                                if isSelectionMode {
+                                    RecordSelectionIndicator(isSelected: selectedIDs.contains(note.id))
+                                }
+
+                                AudioNoteRow(note: note)
+                            }
                             .contentShape(Rectangle())
-                            .onTapGesture { selectedNote = note }
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    notePendingDeletion = note
-                                    showsDeleteConfirmation = true
-                                } label: {
-                                    Label("common.delete".localized, systemImage: "trash")
+                            .onTapGesture {
+                                if isSelectionMode {
+                                    toggleSelection(for: note.id)
+                                } else {
+                                    selectedNote = note
                                 }
                             }
+                            .contextMenu {
+                                if !isSelectionMode {
+                                    Button(role: .destructive) {
+                                        notePendingDeletion = note
+                                        showsDeleteConfirmation = true
+                                    } label: {
+                                        Label("common.delete".localized, systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
                     }
-                    }
-                    .padding(AppSpacing.md)
+                    .padding(.horizontal, AppSpacing.md)
+//                    .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+                    .padding(.bottom, RecordsLayout.bottomContentPadding)
                 }
                 .refreshable { library.reload() }
             }
         }
-        .background(AppColors.secondaryBackground.ignoresSafeArea())
+        .safeAreaPadding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+        .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+
+        .background(Color.black.ignoresSafeArea())
+//        .ignoresSafeArea(edges: .bottom)
         .onAppear { library.reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .recordsBatchDeleteRequested)) { notification in
+            guard let request = notification.object as? RecordBatchDeleteRequest,
+                  request.category == .audioNote else { return }
+            request.ids.forEach { library.delete($0) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .recordsSelectAllRequested)) { notification in
+            guard let request = notification.object as? RecordSelectAllRequest,
+                  request.category == .audioNote else { return }
+            selectedIDs.formUnion(library.notes.map(\.id))
+        }
         .confirmationDialog(
             "records.delete.title".localized,
             isPresented: $showsDeleteConfirmation
@@ -59,6 +93,14 @@ struct AudioNoteRecordsView: View {
             AudioNoteDetailView(noteID: note.id) {
                 selectedNote = nil
             }
+        }
+    }
+
+    private func toggleSelection(for id: UUID) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
         }
     }
 }

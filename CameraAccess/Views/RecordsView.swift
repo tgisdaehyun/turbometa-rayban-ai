@@ -5,7 +5,7 @@
 
 import SwiftUI
 
-private enum RecordCategory: Int, CaseIterable, Identifiable {
+enum RecordCategory: Int, CaseIterable, Identifiable {
     case liveAI
     case translation
     case audioNote
@@ -33,64 +33,224 @@ private enum RecordCategory: Int, CaseIterable, Identifiable {
     }
 }
 
+struct RecordBatchDeleteRequest {
+    let category: RecordCategory
+    let ids: Set<UUID>
+}
+
+struct RecordSelectAllRequest {
+    let category: RecordCategory
+}
+
+enum RecordsLayout {
+    static let categoryBarHeight: CGFloat = 56
+    static let bottomContentPadding: CGFloat = 96
+}
+
+struct RecordListScrollOffsetPreferenceKey: PreferenceKey {
+    static let defaultValue: [Int: CGFloat] = [:]
+
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+struct RecordListScrollMarker: View {
+    let category: RecordCategory
+
+    var body: some View {
+        GeometryReader { geometry in
+            Color.clear
+                .preference(
+                    key: RecordListScrollOffsetPreferenceKey.self,
+                    value: [
+                        category.rawValue:
+                            geometry.frame(in: .named("recordsContent")).minY
+                            - RecordsLayout.categoryBarHeight
+                    ]
+                )
+        }
+        .frame(height: 0)
+    }
+}
+
+extension Notification.Name {
+    static let recordsBatchDeleteRequested = Notification.Name("recordsBatchDeleteRequested")
+    static let recordsSelectAllRequested = Notification.Name("recordsSelectAllRequested")
+}
+
 struct RecordsView: View {
-    @State private var selectedCategory: RecordCategory = .liveAI
+    // Keep the TabView selection as a stable integer. SwiftUI's page-style
+    // TabView can otherwise briefly resolve enum tags to the adjacent page
+    // during the first programmatic selection.
+    @State private var selectedCategoryIndex = RecordCategory.liveAI.rawValue
+    @State private var isSelectionMode = false
+    @State private var selectedRecordIDs = Set<UUID>()
+    @State private var showsBatchDeleteConfirmation = false
+    @State private var recordsScrollOffset: CGFloat = 0
+
+    private var selectedCategory: RecordCategory {
+        RecordCategory(rawValue: selectedCategoryIndex) ?? .liveAI
+    }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        GlassEffectContainer(spacing: AppSpacing.sm) {
-                            HStack(spacing: AppSpacing.sm) {
-                                ForEach(RecordCategory.allCases) { category in
-                                    RecordTabButton(
-                                        title: category.title,
-                                        isSelected: selectedCategory == category
-                                    ) {
-                                        withAnimation(.snappy) {
-                                            selectedCategory = category
-                                        }
-                                    }
-                                    .id(category)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, AppSpacing.md)
-                        .padding(.vertical, AppSpacing.sm)
-                    }
-                    .onChange(of: selectedCategory) { _, category in
-                        withAnimation(.snappy) {
-                            proxy.scrollTo(category, anchor: .center)
-                        }
-                    }
-                }
+            ZStack {
+                Color.black
+                    .ignoresSafeArea()
 
-                // Content
-                TabView(selection: $selectedCategory) {
-                    LiveAIRecordsView()
-                        .tag(RecordCategory.liveAI)
+                TabView(selection: $selectedCategoryIndex) {
 
-                    TranslationRecordsView()
-                        .tag(RecordCategory.translation)
+                    LiveAIRecordsView(
+                        isSelectionMode: $isSelectionMode,
+                        selectedIDs: $selectedRecordIDs
+                    )
+                        .tag(RecordCategory.liveAI.rawValue)
 
-                    AudioNoteRecordsView()
-                        .tag(RecordCategory.audioNote)
+                    TranslationRecordsView(
+                        isSelectionMode: $isSelectionMode,
+                        selectedIDs: $selectedRecordIDs
+                    )
+                        .tag(RecordCategory.translation.rawValue)
+
+                    AudioNoteRecordsView(
+                        isSelectionMode: $isSelectionMode,
+                        selectedIDs: $selectedRecordIDs
+                    )
+                        .tag(RecordCategory.audioNote.rawValue)
 
                     LeanEatRecordsView()
-                        .tag(RecordCategory.leanEat)
+                        .tag(RecordCategory.leanEat.rawValue)
 
                     WordLearnRecordsView()
-                        .tag(RecordCategory.wordLearn)
+                        .tag(RecordCategory.wordLearn.rawValue)
 
-                    QuickVisionRecordsView()
-                        .tag(RecordCategory.quickVision)
+                    QuickVisionRecordsView(
+                        isSelectionMode: $isSelectionMode,
+                        selectedIDs: $selectedRecordIDs
+                    )
+                        .tag(RecordCategory.quickVision.rawValue)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
+                .ignoresSafeArea(edges: .all)
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    ScrollViewReader { proxy in
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            GlassEffectContainer(spacing: AppSpacing.sm) {
+                                HStack(spacing: AppSpacing.sm) {
+                                    ForEach(RecordCategory.allCases) { category in
+                                        RecordTabButton(
+                                            title: category.title,
+                                            isSelected: selectedCategory == category
+                                        ) {
+                                            selectedCategoryIndex = category.rawValue
+                                        }
+                                        .id(category.rawValue)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, AppSpacing.md)
+                            .padding(.vertical, AppSpacing.sm)
+
+                        }
+                        .frame(height: RecordsLayout.categoryBarHeight)
+                        .onChange(of: selectedCategoryIndex) { _, rawValue in
+                            guard let category = RecordCategory(rawValue: rawValue) else { return }
+                            withAnimation(.snappy) {
+                                proxy.scrollTo(category.rawValue, anchor: .center)
+                            }
+                        }
+//                        .background {
+//                            if recordsScrollOffset < RecordsLayout.categoryBarHeight + AppSpacing.md {
+//                                Rectangle()
+//                                    .fill(.ultraThinMaterial)
+//                            } else {
+//                                Color.clear
+//                            }
+//                        }
+//                        .overlay {
+//                            if recordsScrollOffset < RecordsLayout.categoryBarHeight + AppSpacing.md {
+//                                Rectangle()
+//                                    .fill(Color.white.opacity(0.08))
+//                                    .frame(height: 0.5)
+//                                    .frame(maxHeight: .infinity, alignment: .bottom)
+//                            }
+//                        }
+                    }
+
+                }
+                .coordinateSpace(name: "recordsContent")
+                .onPreferenceChange(RecordListScrollOffsetPreferenceKey.self) { offsets in
+                    recordsScrollOffset = offsets[selectedCategoryIndex] ?? 0
+                }
             }
             .navigationTitle("records.title".localized)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .tabBar)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if isSelectionMode {
+                        Button {
+                            NotificationCenter.default.post(
+                                name: .recordsSelectAllRequested,
+                                object: RecordSelectAllRequest(category: selectedCategory)
+                            )
+                        } label: {
+                            Label("records.selectAll".localized, systemImage: "checkmark.circle")
+                        }
+
+                        Button(role: .destructive) {
+                            showsBatchDeleteConfirmation = true
+                        } label: {
+                            Label("common.delete".localized, systemImage: "trash")
+                        }
+                        .disabled(selectedRecordIDs.isEmpty)
+
+                        Button("common.done".localized) {
+                            endSelectionMode()
+                        }
+                    } else {
+                        Button {
+                            isSelectionMode = true
+                        } label: {
+                            Label("records.select".localized, systemImage: "checkmark.circle")
+                        }
+                    }
+                }
+            }
+            .confirmationDialog(
+                "records.batchDelete.title".localized,
+                isPresented: $showsBatchDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("records.delete.confirm".localized, role: .destructive) {
+                    deleteSelectedRecords()
+                }
+                Button("common.cancel".localized, role: .cancel) {}
+            } message: {
+                Text("records.batchDelete.message".localized)
+            }
+            .onChange(of: selectedCategoryIndex) { _, _ in
+                endSelectionMode()
+            }
         }
+    }
+
+    private func endSelectionMode() {
+        isSelectionMode = false
+        selectedRecordIDs.removeAll()
+    }
+
+    private func deleteSelectedRecords() {
+        guard !selectedRecordIDs.isEmpty else { return }
+        NotificationCenter.default.post(
+            name: .recordsBatchDeleteRequested,
+            object: RecordBatchDeleteRequest(
+                category: selectedCategory,
+                ids: selectedRecordIDs
+            )
+        )
+        endSelectionMode()
     }
 }
 
@@ -110,7 +270,7 @@ struct RecordTabButton: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, AppSpacing.sm)
-                .frame(minHeight: 40)
+//                .frame(minHeight: 40)
         }
         .buttonStyle(
             .glass(
@@ -202,6 +362,8 @@ struct UnifiedRecordCard: View {
 // MARK: - Live AI Records
 
 struct LiveAIRecordsView: View {
+    @Binding var isSelectionMode: Bool
+    @Binding var selectedIDs: Set<UUID>
     @StateObject private var viewModel = ConversationListViewModel()
     @State private var selectedConversation: ConversationRecord?
     @State private var conversationPendingDeletion: ConversationRecord?
@@ -209,7 +371,7 @@ struct LiveAIRecordsView: View {
 
     var body: some View {
         ZStack {
-            AppColors.secondaryBackground
+            Color.black
                 .ignoresSafeArea()
 
             if viewModel.conversations.isEmpty {
@@ -233,12 +395,26 @@ struct LiveAIRecordsView: View {
                 // Conversation list
                 ScrollView {
                     LazyVStack(spacing: AppSpacing.md) {
+                        RecordListScrollMarker(category: .liveAI)
+
                         ForEach(viewModel.conversations) { conversation in
-                            ConversationCell(conversation: conversation)
-                                .onTapGesture {
+                            HStack(spacing: AppSpacing.sm) {
+                                if isSelectionMode {
+                                    RecordSelectionIndicator(isSelected: selectedIDs.contains(conversation.id))
+                                }
+
+                                ConversationCell(conversation: conversation)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if isSelectionMode {
+                                    toggleSelection(for: conversation.id)
+                                } else {
                                     selectedConversation = conversation
                                 }
-                                .contextMenu {
+                            }
+                            .contextMenu {
+                                if !isSelectionMode {
                                     Button(role: .destructive) {
                                         conversationPendingDeletion = conversation
                                         showsDeleteConfirmation = true
@@ -246,17 +422,34 @@ struct LiveAIRecordsView: View {
                                         Label("common.delete".localized, systemImage: "trash")
                                     }
                                 }
+                            }
                         }
                     }
-                    .padding(AppSpacing.md)
+                    .padding(.horizontal, AppSpacing.md)
+                    .padding(.bottom, RecordsLayout.bottomContentPadding)
                 }
+                .safeAreaPadding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+
                 .refreshable {
                     viewModel.loadConversations()
                 }
+                .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+
             }
         }
+//        .ignoresSafeArea(edges: .bottom)
         .onAppear {
             viewModel.loadConversations()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .recordsBatchDeleteRequested)) { notification in
+            guard let request = notification.object as? RecordBatchDeleteRequest,
+                  request.category == .liveAI else { return }
+            viewModel.deleteConversations(ids: request.ids)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .recordsSelectAllRequested)) { notification in
+            guard let request = notification.object as? RecordSelectAllRequest,
+                  request.category == .liveAI else { return }
+            selectedIDs.formUnion(viewModel.conversations.map(\.id))
         }
         .confirmationDialog(
             "records.delete.title".localized,
@@ -280,6 +473,14 @@ struct LiveAIRecordsView: View {
             }
         }
     }
+
+    private func toggleSelection(for id: UUID) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
 }
 
 // MARK: - Conversation List ViewModel
@@ -295,6 +496,11 @@ class ConversationListViewModel: ObservableObject {
 
     func deleteConversation(_ id: UUID) {
         ConversationStorage.shared.deleteConversation(id)
+        loadConversations()
+    }
+
+    func deleteConversations(ids: Set<UUID>) {
+        ids.forEach { ConversationStorage.shared.deleteConversation($0) }
         loadConversations()
     }
 }
@@ -321,9 +527,22 @@ struct ConversationCell: View {
     }
 }
 
+struct RecordSelectionIndicator: View {
+    let isSelected: Bool
+
+    var body: some View {
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            .font(.title3)
+            .foregroundStyle(isSelected ? AppColors.primary : AppColors.textTertiary)
+            .frame(width: 28)
+    }
+}
+
 // MARK: - Translation Records
 
 struct TranslationRecordsView: View {
+    @Binding var isSelectionMode: Bool
+    @Binding var selectedIDs: Set<UUID>
     @StateObject private var viewModel = TranslationHistoryViewModel()
     @State private var selectedSession: TranslationSession?
     @State private var sessionPendingDeletion: TranslationSession?
@@ -337,27 +556,47 @@ struct TranslationRecordsView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: AppSpacing.md) {
-                    ForEach(viewModel.sessions) { session in
-                        TranslationSessionCell(session: session)
+                        RecordListScrollMarker(category: .translation)
+
+                        ForEach(viewModel.sessions) { session in
+                            HStack(spacing: AppSpacing.sm) {
+                                if isSelectionMode {
+                                    RecordSelectionIndicator(isSelected: selectedIDs.contains(session.id))
+                                }
+
+                                TranslationSessionCell(session: session)
+                            }
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                selectedSession = session
-                            }
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    sessionPendingDeletion = session
-                                    showsDeleteConfirmation = true
-                                } label: {
-                                    Label("common.delete".localized, systemImage: "trash")
+                                if isSelectionMode {
+                                    toggleSelection(for: session.id)
+                                } else {
+                                    selectedSession = session
                                 }
                             }
+                            .contextMenu {
+                                if !isSelectionMode {
+                                    Button(role: .destructive) {
+                                        sessionPendingDeletion = session
+                                        showsDeleteConfirmation = true
+                                    } label: {
+                                        Label("common.delete".localized, systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
                     }
-                    }
-                    .padding(AppSpacing.md)
+                    .padding(.horizontal, AppSpacing.md)
+//                    .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+                    .padding(.bottom, RecordsLayout.bottomContentPadding)
                 }
             }
         }
-        .background(AppColors.secondaryBackground.ignoresSafeArea())
+        .safeAreaPadding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+        .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+
+        .background(Color.black.ignoresSafeArea())
+//        .ignoresSafeArea(edges: .bottom)
         .refreshable {
             viewModel.load()
         }
@@ -366,6 +605,16 @@ struct TranslationRecordsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .liveTranslateHistoryDidChange)) { _ in
             viewModel.load()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .recordsBatchDeleteRequested)) { notification in
+            guard let request = notification.object as? RecordBatchDeleteRequest,
+                  request.category == .translation else { return }
+            viewModel.deleteSessions(ids: request.ids)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .recordsSelectAllRequested)) { notification in
+            guard let request = notification.object as? RecordSelectAllRequest,
+                  request.category == .translation else { return }
+            selectedIDs.formUnion(viewModel.sessions.map(\.id))
         }
         .confirmationDialog(
             "records.delete.title".localized,
@@ -407,6 +656,14 @@ struct TranslationRecordsView: View {
                 .padding(.horizontal, AppSpacing.xl)
         }
     }
+
+    private func toggleSelection(for id: UUID) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
 }
 
 // MARK: - Translation History View Model
@@ -427,6 +684,14 @@ final class TranslationHistoryViewModel: ObservableObject {
 
     func delete(session: TranslationSession) {
         _ = storage.deleteRecords(ids: session.records.map(\.id))
+        load()
+    }
+
+    func deleteSessions(ids: Set<UUID>) {
+        let recordIDs = sessions
+            .filter { ids.contains($0.id) }
+            .flatMap { $0.records.map(\.id) }
+        _ = storage.deleteRecords(ids: recordIDs)
         load()
     }
 }
@@ -597,7 +862,7 @@ private struct TranslationTurnDetailCell: View {
 struct LeanEatRecordsView: View {
     var body: some View {
         ZStack {
-            AppColors.secondaryBackground
+            Color.black
                 .ignoresSafeArea()
 
             VStack(spacing: AppSpacing.lg) {
@@ -614,6 +879,7 @@ struct LeanEatRecordsView: View {
                     .foregroundColor(AppColors.textSecondary)
             }
         }
+        .ignoresSafeArea(edges: .bottom)
     }
 }
 
@@ -622,7 +888,7 @@ struct LeanEatRecordsView: View {
 struct WordLearnRecordsView: View {
     var body: some View {
         ZStack {
-            AppColors.secondaryBackground
+            Color.black
                 .ignoresSafeArea()
 
             VStack(spacing: AppSpacing.lg) {
@@ -639,18 +905,21 @@ struct WordLearnRecordsView: View {
                     .foregroundColor(AppColors.textSecondary)
             }
         }
+        .ignoresSafeArea(edges: .bottom)
     }
 }
 
 // MARK: - Quick Vision Records
 
 struct QuickVisionRecordsView: View {
+    @Binding var isSelectionMode: Bool
+    @Binding var selectedIDs: Set<UUID>
     @State private var records: [QuickVisionRecord] = []
     @State private var selectedRecord: QuickVisionRecord?
 
     var body: some View {
         ZStack {
-            AppColors.secondaryBackground
+            Color.black
                 .ignoresSafeArea()
 
             if records.isEmpty {
@@ -674,22 +943,52 @@ struct QuickVisionRecordsView: View {
                 // Records list
                 ScrollView {
                     LazyVStack(spacing: AppSpacing.md) {
+                        RecordListScrollMarker(category: .quickVision)
+
                         ForEach(records) { record in
-                            QuickVisionRecordCell(record: record)
-                                .onTapGesture {
+                            HStack(spacing: AppSpacing.sm) {
+                                if isSelectionMode {
+                                    RecordSelectionIndicator(isSelected: selectedIDs.contains(record.id))
+                                }
+
+                                QuickVisionRecordCell(record: record)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if isSelectionMode {
+                                    toggleSelection(for: record.id)
+                                } else {
                                     selectedRecord = record
                                 }
+                            }
                         }
                     }
-                    .padding(AppSpacing.md)
+                    .padding(.horizontal, AppSpacing.md)
+//                    .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+                    .padding(.bottom, RecordsLayout.bottomContentPadding)
                 }
                 .refreshable {
                     loadRecords()
                 }
             }
         }
+        .safeAreaPadding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+        .padding(.top, RecordsLayout.categoryBarHeight + AppSpacing.md)
+
+        .ignoresSafeArea(edges: .bottom)
         .onAppear {
             loadRecords()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .recordsBatchDeleteRequested)) { notification in
+            guard let request = notification.object as? RecordBatchDeleteRequest,
+                  request.category == .quickVision else { return }
+            request.ids.forEach { QuickVisionStorage.shared.deleteRecord($0) }
+            loadRecords()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .recordsSelectAllRequested)) { notification in
+            guard let request = notification.object as? RecordSelectAllRequest,
+                  request.category == .quickVision else { return }
+            selectedIDs.formUnion(records.map(\.id))
         }
         .sheet(item: $selectedRecord) { record in
             QuickVisionRecordDetailView(record: record)
@@ -698,6 +997,14 @@ struct QuickVisionRecordsView: View {
 
     private func loadRecords() {
         records = QuickVisionStorage.shared.loadAllRecords()
+    }
+
+    private func toggleSelection(for id: UUID) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
     }
 }
 

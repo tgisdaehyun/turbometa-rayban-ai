@@ -549,3 +549,7 @@
 "audioNote.status.completed" = "Completed";
 "audioNote.status.failed" = "Failed";
 "common.delete" = "Delete";
+"records.select" = "Select";
+"records.selectAll" = "Select All";
+"records.batchDelete.title" = "Delete selected records?";
+"records.batchDelete.message" = "The selected records will be permanently deleted and cannot be recovered.";
