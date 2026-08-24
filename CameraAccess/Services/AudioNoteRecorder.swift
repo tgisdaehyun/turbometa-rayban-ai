@@ -13,6 +13,7 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
     @Published private(set) var activeInput: AudioNoteInput?
     @Published private(set) var activeInputName: String?
     @Published private(set) var isGlassesInputAvailable = false
+    @Published private(set) var isPreparingInput = false
 
     var onRouteLost: (() -> Void)?
     var onMaximumDuration: (() -> Void)?
@@ -24,6 +25,7 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
     private var accumulatedElapsed: TimeInterval = 0
     private var recordingStartedAt: TimeInterval?
     private var didReachMaximumDuration = false
+    private var preparationGeneration = 0
 
     override init() {
         super.init()
@@ -49,18 +51,96 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
     }
 
+    /// Activates an input-capable audio session when the recording page opens.
+    /// Bluetooth HFP inputs are commonly registered only after activation, so
+    /// querying `availableInputs` during cold launch reports a false negative.
+    func prepare(input: AudioNoteInput) async {
+        guard !isRecording else { return }
+        preparationGeneration += 1
+        let generation = preparationGeneration
+        isPreparingInput = true
+        defer {
+            if preparationGeneration == generation {
+                isPreparingInput = false
+            }
+        }
+
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try activateRecordingSession(session)
+
+            let desiredPort: AVAudioSession.Port = input == .glasses ? .bluetoothHFP : .builtInMic
+            for attempt in 0..<15 {
+                guard preparationGeneration == generation, !Task.isCancelled else { return }
+                refreshRouteState()
+                if let preferred = session.availableInputs?.first(where: { $0.portType == desiredPort }) {
+                    try session.setPreferredInput(preferred)
+                    refreshRouteState(fallbackName: preferred.portName)
+                    print("🎙️ [AudioNote] prepared input=\(input.rawValue), attempt=\(attempt + 1), name=\(preferred.portName)")
+                    return
+                }
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            refreshRouteState()
+            print("⚠️ [AudioNote] input preparation timed out: \(desiredPort.rawValue)")
+        } catch is CancellationError {
+            // The page disappeared or a newer input selection superseded this request.
+        } catch {
+            refreshRouteState()
+            print("⚠️ [AudioNote] input preparation failed: \(error.localizedDescription)")
+        }
+    }
+
+    func releasePreparation() {
+        preparationGeneration += 1
+        isPreparingInput = false
+        guard !isRecording else { return }
+        let session = AVAudioSession.sharedInstance()
+        try? session.setPreferredInput(nil)
+        try? session.setActive(false, options: .notifyOthersOnDeactivation)
+        activeInputName = nil
+    }
+
     func start(at url: URL, input: AudioNoteInput) throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
-        try session.setPreferredSampleRate(16_000)
-        try session.setActive(true)
+        let baseOptions: AVAudioSession.CategoryOptions = [.allowBluetoothHFP]
+        // This is a one-way recorder: it does not need a playback path while
+        // recording. Using voiceChat here enables call-style voice processing
+        // and echo cancellation, which can suppress a far-end speaker's voice
+        // picked up from the glasses. Measurement mode keeps the HFP input
+        // available while avoiding the duplex voice-chat processing path.
+        try activateRecordingSession(session)
 
         let desiredPort: AVAudioSession.Port = input == .glasses ? .bluetoothHFP : .builtInMic
         let availableInputs = session.availableInputs?.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ", ") ?? "none"
         print("🎙️ [AudioNote] start requested input=\(input.rawValue), available=[\(availableInputs)]")
-        guard let preferred = session.availableInputs?.first(where: { $0.portType == desiredPort }) else {
+        guard var preferred = session.availableInputs?.first(where: { $0.portType == desiredPort }) else {
             print("❌ [AudioNote] requested input unavailable: \(desiredPort.rawValue)")
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
             throw AudioNoteRecorderError.inputUnavailable(input)
+        }
+
+        // iOS 26.2+ lets compatible Bluetooth microphones expose a dedicated
+        // far-field capture path. Prefer it for Audio Notes because this
+        // feature records the surrounding conversation rather than only the
+        // wearer's near-field voice. Unsupported accessories continue using
+        // ordinary HFP without failing the recording.
+        if input == .glasses, #available(iOS 26.2, *) {
+            let capability = preferred.bluetoothMicrophoneExtension?.farFieldCapture
+            let isSupported = capability?.isSupported == true
+            print("🎙️ [AudioNote] farField supported=\(isSupported)")
+            if isSupported {
+                try session.setActive(false)
+                try session.setCategory(
+                    .record,
+                    mode: .measurement,
+                    options: [baseOptions, .farFieldInput]
+                )
+                try session.setActive(true)
+                preferred = session.availableInputs?.first(where: { $0.uid == preferred.uid })
+                    ?? session.availableInputs?.first(where: { $0.portType == desiredPort })
+                    ?? preferred
+            }
         }
         try session.setPreferredInput(preferred)
         refreshRouteState(fallbackName: preferred.portName)
@@ -91,6 +171,11 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
         }
         let started = recorder.record()
         print("🎙️ [AudioNote] record started=\(started), isRecording=\(recorder.isRecording)")
+        if input == .glasses, #available(iOS 26.2, *) {
+            let enabled = session.currentRoute.inputs.first?
+                .bluetoothMicrophoneExtension?.farFieldCapture.isEnabled == true
+            print("🎙️ [AudioNote] farField enabled=\(enabled)")
+        }
         guard started else {
             self.recorder = nil
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
@@ -107,6 +192,12 @@ final class AudioNoteRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
         isRecording = true
         isPaused = false
         startTimer()
+    }
+
+    private func activateRecordingSession(_ session: AVAudioSession) throws {
+        try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
+        try session.setPreferredSampleRate(16_000)
+        try session.setActive(true)
     }
 
     func pause() {

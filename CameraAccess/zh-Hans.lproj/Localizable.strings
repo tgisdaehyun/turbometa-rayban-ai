@@ -487,6 +487,7 @@
 "audioNote.input.glasses" = "眼镜麦克风";
 "audioNote.input.phone" = "iPhone 麦克风";
 "audioNote.glasses.connected" = "蓝牙 HFP 麦克风已连接";
+"audioNote.glasses.connecting" = "正在连接眼镜麦克风…";
 "audioNote.glasses.unavailable" = "眼镜麦克风不可用";
 "audioNote.actualInput" = "实际麦克风";
 "audioNote.playback.errorTitle" = "播放错误";

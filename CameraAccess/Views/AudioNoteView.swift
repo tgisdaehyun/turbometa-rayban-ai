@@ -49,6 +49,15 @@ struct AudioNoteView: View {
         .sheet(item: $selectedNote) { note in
             AudioNoteDetailView(noteID: note.id)
         }
+        .task {
+            await viewModel.prepareSelectedInput()
+        }
+        .onChange(of: viewModel.selectedInput) { _, _ in
+            Task { await viewModel.prepareSelectedInput() }
+        }
+        .onDisappear {
+            viewModel.teardown()
+        }
     }
 
     private var header: some View {
@@ -88,25 +97,9 @@ struct AudioNoteView: View {
                 }
             }
             if viewModel.selectedInput == .glasses {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(viewModel.recorder.isGlassesInputAvailable ? Color.green : Color.orange)
-                        .frame(width: 8, height: 8)
-                    Text(viewModel.recorder.isGlassesInputAvailable
-                         ? "audioNote.glasses.connected".localized
-                         : "audioNote.glasses.unavailable".localized)
-                        .font(.caption)
-                    Spacer()
-                }
+                AudioNoteGlassesStatus(recorder: viewModel.recorder)
             }
-            if let inputName = viewModel.recorder.activeInputName {
-                HStack {
-                    Text("audioNote.actualInput".localized).foregroundStyle(.secondary)
-                    Spacer()
-                    Text(inputName).lineLimit(1)
-                }
-                .font(.caption)
-            }
+            AudioNoteActiveInput(recorder: viewModel.recorder)
             Divider().overlay(.white.opacity(0.15))
             Toggle("audioNote.diarization".localized, isOn: $viewModel.diarizationEnabled)
                 .disabled(viewModel.recorder.isRecording)
@@ -168,6 +161,52 @@ struct AudioNoteView: View {
 
     private func statusText(_ status: AudioNoteStatus) -> String {
         "audioNote.status.\(status.rawValue)".localized
+    }
+}
+
+private struct AudioNoteGlassesStatus: View {
+    @ObservedObject var recorder: AudioNoteRecorder
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if recorder.isPreparingInput {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Circle()
+                    .fill(recorder.isGlassesInputAvailable ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+            }
+            Text(statusText)
+                .font(.caption)
+            Spacer()
+        }
+    }
+
+    private var statusText: String {
+        if recorder.isPreparingInput {
+            return "audioNote.glasses.connecting".localized
+        }
+        return recorder.isGlassesInputAvailable
+            ? "audioNote.glasses.connected".localized
+            : "audioNote.glasses.unavailable".localized
+    }
+}
+
+private struct AudioNoteActiveInput: View {
+    @ObservedObject var recorder: AudioNoteRecorder
+
+    var body: some View {
+        if let inputName = recorder.activeInputName {
+            HStack {
+                Text("audioNote.actualInput".localized)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(inputName)
+                    .lineLimit(1)
+            }
+            .font(.caption)
+        }
     }
 }
 

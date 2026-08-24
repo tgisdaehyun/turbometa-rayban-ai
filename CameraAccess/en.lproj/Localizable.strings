@@ -487,6 +487,7 @@
 "audioNote.input.glasses" = "Glasses Microphone";
 "audioNote.input.phone" = "iPhone Microphone";
 "audioNote.glasses.connected" = "Bluetooth HFP microphone available";
+"audioNote.glasses.connecting" = "Connecting to glasses microphone…";
 "audioNote.glasses.unavailable" = "Glasses microphone unavailable";
 "audioNote.actualInput" = "Active microphone";
 "audioNote.playback.errorTitle" = "Playback Error";

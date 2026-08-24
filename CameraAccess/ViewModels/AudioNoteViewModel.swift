@@ -173,6 +173,14 @@ final class AudioNoteViewModel: ObservableObject {
         recorder.onMaximumDuration = { [weak self] in self?.stop() }
     }
 
+    func prepareSelectedInput() async {
+        await recorder.prepare(input: selectedInput)
+    }
+
+    func teardown() {
+        recorder.releasePreparation()
+    }
+
     func start() async {
         let granted: Bool
         switch AVAudioApplication.shared.recordPermission {
@@ -190,6 +198,7 @@ final class AudioNoteViewModel: ObservableObject {
         }
 
         do {
+            await recorder.prepare(input: selectedInput)
             let id = UUID()
             let directory = try storage.directory(for: id)
             let audioURL = directory.appendingPathComponent("audio.m4a")
