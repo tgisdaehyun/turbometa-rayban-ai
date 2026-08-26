@@ -16,10 +16,16 @@ class LiveAIManager: ObservableObject {
     @Published var isRunning = false
     @Published var isConnected = false
     @Published var errorMessage: String?
+    @Published var showError = false
+    @Published private(set) var isRecording = false
+    @Published private(set) var currentTranscript = ""
+    @Published private(set) var isSpeaking = false
     @Published private(set) var responseState: LiveAIResponseState = .idle
     @Published private(set) var inputMode: LiveAIInputMode = .voice
     @Published private(set) var sentImageCount = 0
     @Published private(set) var isSwitchingInputMode = false
+    /// 会话结束原因，供 UI 区分"正常停止"与"失败"
+    @Published private(set) var stopReason: LiveAIStopReason?
 
     // 依赖
     private(set) var streamViewModel: StreamSessionViewModel?
@@ -35,32 +41,27 @@ class LiveAIManager: ObservableObject {
     private var frameUpdateTimer: Timer?
 
     // 对话历史
-    private var conversationHistory: [ConversationMessage] = []
+    @Published private(set) var conversationHistory: [ConversationMessage] = []
     private var initialInputMode: LiveAIInputMode = .voice
 
     // TTS
     private let tts = TTSService.shared
     private var lastSpokenErrorAt: Date?
 
-    private init() {
-        // 监听 Intent 触发
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleLiveAITrigger(_:)),
-            name: .liveAITriggered,
-            object: nil
-        )
-    }
+    /// 清理进行中标志：防止停止按钮/onDisappear/停止指令并发触发重复清理，
+    /// 同时让主动断开后服务上报的取消类错误被静默忽略
+    private var isStopping = false
+
+    /// 会话代次：每次 startLiveAISession 递增。所有服务回调携带启动时的代次，
+    /// 旧会话已排队的延迟回调（含取消类错误）到达时代次不匹配即丢弃，
+    /// 避免污染新会话状态
+    private var sessionGeneration = 0
+
+    private init() {}
 
     /// 设置 StreamSessionViewModel 引用
     func setStreamViewModel(_ viewModel: StreamSessionViewModel) {
         self.streamViewModel = viewModel
-    }
-
-    @objc private func handleLiveAITrigger(_ notification: Notification) {
-        Task { @MainActor in
-            await startLiveAISession()
-        }
     }
 
     // MARK: - Start Session
@@ -72,23 +73,38 @@ class LiveAIManager: ObservableObject {
             return
         }
 
-        // 获取 API Key
+        // 上一次会话的清理（stopSession/failFatal）尚未完成：等待清理结束再启动，
+        // 避免新会话的服务引用、DAT 会话被旧清理尾部覆盖（"停止后立即再次 Siri 启动"场景）
+        if isStopping {
+            let cleanupFinished = await waitForCondition(timeout: 5.0) { !self.isStopping }
+            guard cleanupFinished else {
+                print("⚠️ [LiveAIManager] Previous cleanup did not finish in time, skip starting new session")
+                return
+            }
+            // 等待期间可能已有其它路径启动了会话：重新检查运行状态
+            guard !isRunning else {
+                print("⚠️ [LiveAIManager] Session already started during cleanup wait")
+                return
+            }
+        }
+
+        // 启动前校验：失败不进入运行态，仅弹窗 + TTS 提示
         let apiKey = APIProviderManager.staticLiveAIAPIKey
         guard !apiKey.isEmpty else {
-            errorMessage = "请先在设置中配置 API Key"
-            responseState = .failed
-            speakError("请先在设置中配置 API Key")
+            failBeforeStart("请先在设置中配置 API Key")
             return
         }
 
         if let configurationError = APIProviderManager.shared.liveAIConfigurationError {
-            errorMessage = configurationError
-            responseState = .failed
-            speakError(configurationError)
+            failBeforeStart(configurationError)
             return
         }
 
+        // 新会话代次：旧会话残留的延迟回调将因代次不匹配被全部丢弃
+        sessionGeneration += 1
+
         isRunning = true
+        stopReason = nil
         errorMessage = nil
         conversationHistory = []
         inputMode = .voice
@@ -98,6 +114,7 @@ class LiveAIManager: ObservableObject {
         hasSentFirstAudio = false
         isImageSendingEnabled = false
         currentVideoFrame = nil
+        currentTranscript = ""
 
         // 获取当前 provider
         provider = APIProviderManager.staticLiveAIProvider
@@ -106,9 +123,11 @@ class LiveAIManager: ObservableObject {
         print("🚀 [LiveAIManager] Starting Live AI session...")
 
         do {
-            // 1. 检查设备是否已连接. This is only a hardware/microphone
-            // guard; no DAT camera session is created in voice mode.
-            if let streamViewModel, !streamViewModel.hasActiveDevice {
+            // 1. 强校验 streamViewModel 与设备连接状态
+            guard let streamViewModel else {
+                throw LiveAIError.notInitialized
+            }
+            guard streamViewModel.hasActiveDevice else {
                 print("❌ [LiveAIManager] No active device connected")
                 throw LiveAIError.noDevice
             }
@@ -128,6 +147,13 @@ class LiveAIManager: ObservableObject {
                 self.isConnected
             }
 
+            // 连接阶段用户主动关闭页面（.task 被取消）或会话已被其它路径停止：
+            // 静默退出，不上报为连接失败；资源由 stopSession 统一清理
+            if Task.isCancelled || !isRunning {
+                print("ℹ️ [LiveAIManager] Session cancelled during connection, skip error handling")
+                return
+            }
+
             if !connected {
                 print("❌ [LiveAIManager] Failed to connect to AI service")
                 throw LiveAIError.connectionFailed
@@ -139,19 +165,20 @@ class LiveAIManager: ObservableObject {
 
             print("✅ [LiveAIManager] Live AI session started, ready to talk")
 
-        } catch let error as LiveAIError {
-            errorMessage = error.localizedDescription
-            responseState = .failed
-            speakError(error.localizedDescription)
-            print("❌ [LiveAIManager] LiveAIError: \(error)")
-            await stopSession()
         } catch {
-            errorMessage = error.localizedDescription
-            responseState = .failed
-            speakError(error.localizedDescription)
-            print("❌ [LiveAIManager] Error: \(error)")
-            await stopSession()
+            print("❌ [LiveAIManager] Start failed: \(error)")
+            await failFatal(error.localizedDescription)
         }
+    }
+
+    /// 启动前校验失败：此时尚未进入运行态，无会话资源需要清理，
+    /// 仅弹出错误提示 + TTS 播报，避免 UI 停留在中间状态
+    private func failBeforeStart(_ message: String) {
+        errorMessage = message
+        showError = true
+        responseState = .failed
+        stopReason = .failed
+        speakError(message)
     }
 
     // MARK: - Audio Session Configuration
@@ -193,23 +220,28 @@ class LiveAIManager: ObservableObject {
 
     private func setupOmniCallbacks() {
         guard let omniService = omniService else { return }
+        // 携带本次会话的代次：停止后立即重启时，旧服务已排队的延迟回调
+        // 到达时代次不匹配，一律丢弃，不污染新会话
+        let generation = sessionGeneration
 
         omniService.onConnected = { [weak self] in
             Task { @MainActor in
-                self?.isConnected = true
+                guard let self, self.sessionGeneration == generation else { return }
+                self.isConnected = true
                 print("✅ [LiveAIManager] Omni connected")
             }
         }
 
         omniService.onResponseState = { [weak self] state in
             Task { @MainActor in
-                self?.responseState = state
+                guard let self, self.sessionGeneration == generation else { return }
+                self.responseState = state
             }
         }
 
         omniService.onFirstAudioSent = { [weak self] in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.sessionGeneration == generation else { return }
                 self.hasSentFirstAudio = true
                 self.isImageSendingEnabled = self.inputMode == .vision
                 print("✅ [LiveAIManager] 收到第一次音频发送回调，图片权限=\(self.isImageSendingEnabled)")
@@ -218,19 +250,34 @@ class LiveAIManager: ObservableObject {
 
         omniService.onSpeechStarted = { [weak self] in
             Task { @MainActor in
-                if let strongSelf = self,
-                   strongSelf.canSendImages,
-                   let frame = strongSelf.currentVideoFrame {
+                guard let self, self.sessionGeneration == generation else { return }
+                self.isSpeaking = true
+                if self.canSendImages,
+                   let frame = self.currentVideoFrame {
                     print("🎤📸 [LiveAIManager] 检测到用户语音，发送当前视频帧")
-                    strongSelf.omniService?.sendImageAppend(frame)
-                    strongSelf.sentImageCount += 1
+                    self.omniService?.sendImageAppend(frame)
+                    self.sentImageCount += 1
                 }
+            }
+        }
+
+        omniService.onSpeechStopped = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.sessionGeneration == generation else { return }
+                self.isSpeaking = false
+            }
+        }
+
+        omniService.onTranscriptDelta = { [weak self] delta in
+            Task { @MainActor in
+                guard let self, self.sessionGeneration == generation else { return }
+                self.currentTranscript += delta
             }
         }
 
         omniService.onUserTranscript = { [weak self] userText in
             Task { @MainActor in
-                guard let self = self else { return }
+                guard let self, self.sessionGeneration == generation else { return }
                 print("💬 [LiveAIManager] 用户: \(userText)")
                 self.conversationHistory.append(
                     ConversationMessage(role: .user, content: userText)
@@ -240,41 +287,52 @@ class LiveAIManager: ObservableObject {
 
         omniService.onTranscriptDone = { [weak self] fullText in
             Task { @MainActor in
-                guard let self = self, !fullText.isEmpty else { return }
-                print("💬 [LiveAIManager] AI: \(fullText)")
+                guard let self, self.sessionGeneration == generation else { return }
+                let textToSave = fullText.isEmpty ? self.currentTranscript : fullText
+                guard !textToSave.isEmpty else { return }
+                print("💬 [LiveAIManager] AI: \(textToSave)")
                 self.conversationHistory.append(
-                    ConversationMessage(role: .assistant, content: fullText)
+                    ConversationMessage(role: .assistant, content: textToSave)
                 )
+                self.currentTranscript = ""
             }
         }
 
         omniService.onError = { [weak self] error in
             Task { @MainActor in
-                self?.handleServiceError(error)
-                print("❌ [LiveAIManager] Omni error: \(error)")
+                guard let self, self.sessionGeneration == generation else {
+                    print("ℹ️ [LiveAIManager] Ignoring stale Omni error: \(error)")
+                    return
+                }
+                self.handleServiceError(error)
             }
         }
     }
 
     private func setupGeminiCallbacks() {
         guard let geminiService = geminiService else { return }
+        // 携带本次会话的代次：停止后立即重启时，旧服务已排队的延迟回调
+        // 到达时代次不匹配，一律丢弃，不污染新会话
+        let generation = sessionGeneration
 
         geminiService.onConnected = { [weak self] in
             Task { @MainActor in
-                self?.isConnected = true
+                guard let self, self.sessionGeneration == generation else { return }
+                self.isConnected = true
                 print("✅ [LiveAIManager] Gemini connected")
             }
         }
 
         geminiService.onResponseState = { [weak self] state in
             Task { @MainActor in
-                self?.responseState = state
+                guard let self, self.sessionGeneration == generation else { return }
+                self.responseState = state
             }
         }
 
         geminiService.onFirstAudioSent = { [weak self] in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.sessionGeneration == generation else { return }
                 self.hasSentFirstAudio = true
                 self.isImageSendingEnabled = self.inputMode == .vision
                 print("✅ [LiveAIManager] 收到第一次音频发送回调，图片权限=\(self.isImageSendingEnabled)")
@@ -283,19 +341,34 @@ class LiveAIManager: ObservableObject {
 
         geminiService.onSpeechStarted = { [weak self] in
             Task { @MainActor in
-                if let strongSelf = self,
-                   strongSelf.canSendImages,
-                   let frame = strongSelf.currentVideoFrame {
+                guard let self, self.sessionGeneration == generation else { return }
+                self.isSpeaking = true
+                if self.canSendImages,
+                   let frame = self.currentVideoFrame {
                     print("🎤📸 [LiveAIManager] 检测到用户语音，发送当前视频帧")
-                    strongSelf.geminiService?.sendImageInput(frame)
-                    strongSelf.sentImageCount += 1
+                    self.geminiService?.sendImageInput(frame)
+                    self.sentImageCount += 1
                 }
+            }
+        }
+
+        geminiService.onSpeechStopped = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.sessionGeneration == generation else { return }
+                self.isSpeaking = false
+            }
+        }
+
+        geminiService.onTranscriptDelta = { [weak self] delta in
+            Task { @MainActor in
+                guard let self, self.sessionGeneration == generation else { return }
+                self.currentTranscript += delta
             }
         }
 
         geminiService.onUserTranscript = { [weak self] userText in
             Task { @MainActor in
-                guard let self = self else { return }
+                guard let self, self.sessionGeneration == generation else { return }
                 print("💬 [LiveAIManager] 用户: \(userText)")
                 self.conversationHistory.append(
                     ConversationMessage(role: .user, content: userText)
@@ -305,18 +378,31 @@ class LiveAIManager: ObservableObject {
 
         geminiService.onTranscriptDone = { [weak self] fullText in
             Task { @MainActor in
-                guard let self = self, !fullText.isEmpty else { return }
-                print("💬 [LiveAIManager] AI: \(fullText)")
+                guard let self, self.sessionGeneration == generation else { return }
+                let textToSave = fullText.isEmpty ? self.currentTranscript : fullText
+                guard !textToSave.isEmpty else { return }
+                print("💬 [LiveAIManager] AI: \(textToSave)")
                 self.conversationHistory.append(
-                    ConversationMessage(role: .assistant, content: fullText)
+                    ConversationMessage(role: .assistant, content: textToSave)
                 )
+                self.currentTranscript = ""
+            }
+        }
+
+        geminiService.onAudioDone = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.sessionGeneration == generation else { return }
+                self.isSpeaking = false
             }
         }
 
         geminiService.onError = { [weak self] error in
             Task { @MainActor in
-                self?.handleServiceError(error)
-                print("❌ [LiveAIManager] Gemini error: \(error)")
+                guard let self, self.sessionGeneration == generation else {
+                    print("ℹ️ [LiveAIManager] Ignoring stale Gemini error: \(error)")
+                    return
+                }
+                self.handleServiceError(error)
             }
         }
     }
@@ -402,6 +488,10 @@ class LiveAIManager: ObservableObject {
         errorMessage = "视觉流已断开，已切回纯语音"
         responseState = .failed
         speakError(errorMessage ?? "视觉流已断开，已切回纯语音")
+        // 视觉流已异常，释放 DAT 会话；语音会话保持不变
+        Task { @MainActor in
+            await streamViewModel?.stopSession()
+        }
     }
 
     // MARK: - Connection
@@ -416,6 +506,10 @@ class LiveAIManager: ObservableObject {
     }
 
     private func startRecording() {
+        guard isConnected else {
+            print("⚠️ [LiveAIManager] 未连接，无法开始录音")
+            return
+        }
         print("🎤 [LiveAIManager] 开始录音")
         switch provider {
         case .alibaba:
@@ -423,6 +517,7 @@ class LiveAIManager: ObservableObject {
         case .google:
             geminiService?.startRecording()
         }
+        isRecording = true
     }
 
     private func stopRecording() {
@@ -433,6 +528,7 @@ class LiveAIManager: ObservableObject {
         case .google:
             geminiService?.stopRecording()
         }
+        isRecording = false
     }
 
     // MARK: - Frame Update
@@ -459,11 +555,19 @@ class LiveAIManager: ObservableObject {
 
     // MARK: - Stop Session
 
-    /// 停止 Live AI 会话
+    /// 停止 Live AI 会话（幂等：并发调用只会执行一次清理）
     func stopSession() async {
-        guard isRunning else { return }
+        guard isRunning, !isStopping else { return }
+        isStopping = true
+        // 立即失效当前代次：本会话已排队的回调在清理窗口内全部丢弃，
+        // 避免对话保存后仍有迟到转写追加等状态污染
+        sessionGeneration += 1
 
         print("🛑 [LiveAIManager] Stopping session...")
+
+        // 先发布停止原因再翻转 isRunning，保证 UI 在 isRunning 变化回调中能读到有效的 stopReason
+        stopReason = .stopped
+        isRunning = false
 
         // 停止定时器
         frameUpdateTimer?.invalidate()
@@ -490,12 +594,15 @@ class LiveAIManager: ObservableObject {
         omniService = nil
         geminiService = nil
         isConnected = false
-        isRunning = false
         responseState = .idle
         inputMode = .voice
         hasSentFirstAudio = false
         isImageSendingEnabled = false
         currentVideoFrame = nil
+        currentTranscript = ""
+        isSpeaking = false
+        showError = false
+        isStopping = false
 
         print("✅ [LiveAIManager] Session stopped")
     }
@@ -541,10 +648,76 @@ class LiveAIManager: ObservableObject {
     /// output cannot be fed back into the realtime model. Successful model
     /// responses never pass through this path: they use native provider audio.
     private func handleServiceError(_ message: String) {
+        // 先停录音防回声，再走致命错误的全量清理
         stopRecording()
-        responseState = .failed
+        Task { @MainActor in
+            await failFatal(message)
+        }
+    }
+
+    /// 致命错误统一出口：停止整个会话并清理全部资源。
+    /// 覆盖：设备未连接/未初始化、服务连接失败或超时、运行期服务错误。
+    /// 视觉模式的可恢复失败不走这里，走 fallbackToVoice 保留语音会话。
+    private func failFatal(_ message: String) async {
+        // 正常停止进行中或已完成：主动 disconnect 后服务上报的取消类错误是预期行为，
+        // 不能把正常停止覆盖为失败（避免误弹错误、误播 TTS、并发重复清理）
+        guard isRunning, !isStopping else {
+            print("ℹ️ [LiveAIManager] Ignoring error during stopping: \(message)")
+            return
+        }
+        isStopping = true
+        // 立即失效当前代次：本会话已排队的回调在清理窗口内全部丢弃
+        sessionGeneration += 1
+
+        print("❌ [LiveAIManager] Fatal: \(message)")
+
+        // 先停录音，避免错误播报被回采进模型
+        stopRecording()
+
+        // 保存已产生的对话历史，避免致命错误（如运行中断网）丢失多轮对话
+        saveConversation()
+
         errorMessage = message
+        showError = true
+        responseState = .failed
+        // 先发布停止原因再翻转 isRunning，保证 UI 在变化回调中读到有效的 stopReason
+        stopReason = .failed
+        isRunning = false
+
+        // 停止帧定时器
+        frameUpdateTimer?.invalidate()
+        frameUpdateTimer = nil
+
+        // 断开服务
+        switch provider {
+        case .alibaba:
+            omniService?.disconnect()
+        case .google:
+            geminiService?.disconnect()
+        }
+
+        // 停止视频流
+        await streamViewModel?.stopSession()
+
+        // 重置会话状态
+        omniService = nil
+        geminiService = nil
+        isConnected = false
+        inputMode = .voice
+        hasSentFirstAudio = false
+        isImageSendingEnabled = false
+        currentVideoFrame = nil
+        currentTranscript = ""
+        isSpeaking = false
+        isStopping = false
+
         speakError(message)
+    }
+
+    /// 清除错误提示（UI 确认弹窗后调用）
+    func dismissError() {
+        showError = false
+        errorMessage = nil
     }
 
     private func speakError(_ message: String) {
@@ -562,6 +735,7 @@ class LiveAIManager: ObservableObject {
 // MARK: - Live AI Error
 
 enum LiveAIError: LocalizedError {
+    case notInitialized
     case noDevice
     case streamNotReady
     case connectionFailed
@@ -569,6 +743,8 @@ enum LiveAIError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .notInitialized:
+            return "功能未初始化，请重新打开应用"
         case .noDevice:
             return "眼镜未连接，请先在 Meta View 中配对眼镜"
         case .streamNotReady:
@@ -579,4 +755,13 @@ enum LiveAIError: LocalizedError {
             return "请先在设置中配置 API Key"
         }
     }
+}
+
+// MARK: - Live AI Stop Reason
+
+/// 会话结束原因：stopped 为正常停止（UI 可自动关闭页面），
+/// failed 为失败终止（UI 应保留页面展示错误弹窗）
+enum LiveAIStopReason {
+    case stopped
+    case failed
 }

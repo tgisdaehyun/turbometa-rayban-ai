@@ -73,6 +73,7 @@
 		5F1DD829120116C2EB177411 /* QuickVisionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 330AF93394A09D97C504F568 /* QuickVisionSettingsView.swift */; };
 		6FE225749B8E795D8D265971 /* QuickVisionStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F490219E64EC144DAF8A8C /* QuickVisionStorage.swift */; };
 		759D8C3F84F44478678CA613 /* LiveAIManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC72379319F7F8AAF8019018 /* LiveAIManager.swift */; };
+		AR0002000200020002 /* AppRouteManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AR0001000100010001 /* AppRouteManager.swift */; };
 		8AAC01AA9E2C673BDDD9C7C5 /* QuickVisionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 414A2AC7E8B825BC1B4DB93F /* QuickVisionModels.swift */; };
 		8FD96B7F2E6F0A9800F56AB1 /* TurboMetaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FD96B792E6F0A9800F56AB1 /* TurboMetaApp.swift */; };
 		8FD96B8D2E6F0A9800F56AB1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8FD96B772E6F0A9800F56AB1 /* Assets.xcassets */; };
@@ -204,6 +205,7 @@
 		C7F490219E64EC144DAF8A8C /* QuickVisionStorage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = QuickVisionStorage.swift; sourceTree = "<group>"; };
 		CA3E36CE337855A7F17F2AC8 /* QuickVisionService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = QuickVisionService.swift; sourceTree = "<group>"; };
 		DC72379319F7F8AAF8019018 /* LiveAIManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveAIManager.swift; path = Managers/LiveAIManager.swift; sourceTree = "<group>"; };
+		AR0001000100010001 /* AppRouteManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppRouteManager.swift; path = Managers/AppRouteManager.swift; sourceTree = "<group>"; };
 		E699CC952E8150670052C240 /* CameraAccessTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CameraAccessTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		LT1001000100010001 /* LiveTranslateModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTranslateModels.swift; sourceTree = "<group>"; };
 		LT1002000200020002 /* LiveTranslateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTranslateService.swift; sourceTree = "<group>"; };
@@ -256,6 +258,7 @@
 				1111827A1CF7A278A6DC6934 /* APIProviderManager.swift */,
 				51A08DC107E5A57DDE6036C3 /* QuickVisionModeManager.swift */,
 				DC72379319F7F8AAF8019018 /* LiveAIManager.swift */,
+				AR0001000100010001 /* AppRouteManager.swift */,
 			);
 			name = Managers;
 			sourceTree = "<group>";
@@ -679,6 +682,7 @@
 				3121D19C06DC68008799365A /* LiveAIIntent.swift in Sources */,
 				4BB5DFF12F06C06D00AF7BD0 /* LiveAIModeManager.swift in Sources */,
 				759D8C3F84F44478678CA613 /* LiveAIManager.swift in Sources */,
+				AR0002000200020002 /* AppRouteManager.swift in Sources */,
 				LT0001000100010001 /* LiveTranslateModels.swift in Sources */,
 				LT0002000200020002 /* LiveTranslateService.swift in Sources */,
 				LT0003000300030003 /* LiveTranslateViewModel.swift in Sources */,

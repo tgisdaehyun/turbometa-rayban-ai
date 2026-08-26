@@ -9,10 +9,8 @@ struct TurboMetaHomeView: View {
     @ObservedObject var streamViewModel: StreamSessionViewModel
     @ObservedObject var wearablesViewModel: WearablesViewModel
     @StateObject private var quickVisionManager = QuickVisionManager.shared
-    @StateObject private var liveAIManager = LiveAIManager.shared
     let apiKey: String
 
-    @State private var showLiveAI = false
     @State private var showLiveStream = false
     @State private var showRTMPStreaming = false
     @State private var showLeanEat = false
@@ -60,7 +58,8 @@ struct TurboMetaHomeView: View {
                                     icon: "brain.head.profile",
                                     gradient: [AppColors.liveAI, AppColors.liveAI.opacity(0.7)]
                                 ) {
-                                    showLiveAI = true
+                                    // 与快捷指令走同一路径，由 MainTabView 统一呈现
+                                    AppRouteManager.shared.pendingRoute = .liveAI
                                 }
 
                                 FeatureCard(
@@ -140,9 +139,6 @@ struct TurboMetaHomeView: View {
                 }
             }
             .navigationBarHidden(true)
-            .fullScreenCover(isPresented: $showLiveAI) {
-                LiveAIView(streamViewModel: streamViewModel, apiKey: apiKey)
-            }
             .fullScreenCover(isPresented: $showLiveStream) {
                 SimpleLiveStreamView(streamViewModel: streamViewModel)
             }
@@ -167,19 +163,14 @@ struct TurboMetaHomeView: View {
         }
         .onAppear {
             // 确保 QuickVisionManager 有 streamViewModel 引用
+            // （LiveAIManager 的依赖注入已上移至 MainTabView，保证冷启动时先于会话启动）
             quickVisionManager.setStreamViewModel(streamViewModel)
-            // 确保 LiveAIManager 有 streamViewModel 引用
-            liveAIManager.setStreamViewModel(streamViewModel)
 
             // OpenClaw 自动连接（如果有保存的配置）
             if openClawService.connectionState == .disconnected,
                openClawService.loadGatewayToken() != nil {
                 openClawService.connect()
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .liveAITriggered)) { _ in
-            // 从快捷指令触发，自动打开 Live AI 界面
-            showLiveAI = true
         }
     }
 }

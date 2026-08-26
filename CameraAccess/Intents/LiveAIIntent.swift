@@ -17,8 +17,9 @@ struct LiveAIIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        // 发送通知让 App 自动打开 Live AI 界面
-        NotificationCenter.default.post(name: .liveAITriggered, object: nil)
+        // 只写路由状态，由 MainTabView 消费并呈现 Live AI 界面；
+        // 会话启动统一在 LiveAIView.task 中执行
+        AppRouteManager.shared.pendingRoute = .liveAI
         return .result(dialog: "正在启动实时对话...")
     }
 }
@@ -42,10 +43,4 @@ struct StopLiveAIIntent: AppIntent {
             return .result(dialog: "Live AI 未在运行")
         }
     }
-}
-
-// MARK: - Notification Name
-
-extension Notification.Name {
-    static let liveAITriggered = Notification.Name("liveAITriggered")
 }

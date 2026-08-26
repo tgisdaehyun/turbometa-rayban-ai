@@ -1,25 +1,18 @@
 /*
  * Live AI View
- * 自动启动的实时 AI 对话界面
+ * 实时 AI 对话界面 - 会话由 LiveAIManager 唯一持有，本视图只观察状态与转发用户操作
  */
 
 import SwiftUI
 
 struct LiveAIView: View {
-    @StateObject private var viewModel: OmniRealtimeViewModel
     @ObservedObject var streamViewModel: StreamSessionViewModel
+    @ObservedObject private var liveAIManager = LiveAIManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showConversation = true // 控制对话内容显示/隐藏
-    @State private var frameTimer: Timer?
 
-    init(streamViewModel: StreamSessionViewModel, apiKey: String) {
+    init(streamViewModel: StreamSessionViewModel) {
         self.streamViewModel = streamViewModel
-        // Use the Live AI API key based on selected provider
-        let liveAIApiKey = APIProviderManager.staticLiveAIAPIKey
-        self._viewModel = StateObject(wrappedValue: OmniRealtimeViewModel(
-            apiKey: liveAIApiKey.isEmpty ? apiKey : liveAIApiKey,
-            streamViewModel: streamViewModel
-        ))
     }
 
     var body: some View {
@@ -34,7 +27,7 @@ struct LiveAIView: View {
             } else {
                 // Video is rendered only after the user explicitly opts into
                 // visual mode. Voice mode has no DAT camera session or frame.
-                if viewModel.inputMode == .vision, let videoFrame = streamViewModel.currentVideoFrame {
+                if liveAIManager.inputMode == .vision, let videoFrame = streamViewModel.currentVideoFrame {
                     GeometryReader { geometry in
                         Image(uiImage: videoFrame)
                             .resizable()
@@ -57,17 +50,17 @@ struct LiveAIView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 12) {
-                                ForEach(viewModel.conversationHistory) { message in
+                                ForEach(liveAIManager.conversationHistory) { message in
                                     MessageBubble(message: message)
                                         .id(message.id)
                                 }
 
                                 // Current AI response (streaming)
-                                if !viewModel.currentTranscript.isEmpty {
+                                if !liveAIManager.currentTranscript.isEmpty {
                                     MessageBubble(
                                         message: ConversationMessage(
                                             role: .assistant,
-                                            content: viewModel.currentTranscript
+                                            content: liveAIManager.currentTranscript
                                         )
                                     )
                                     .id("current")
@@ -75,14 +68,14 @@ struct LiveAIView: View {
                             }
                             .padding()
                         }
-                        .onChange(of: viewModel.conversationHistory.count) { _, _ in
-                            if let lastMessage = viewModel.conversationHistory.last {
+                        .onChange(of: liveAIManager.conversationHistory.count) { _, _ in
+                            if let lastMessage = liveAIManager.conversationHistory.last {
                                 withAnimation {
                                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                                 }
                             }
                         }
-                        .onChange(of: viewModel.currentTranscript) { _, _ in
+                        .onChange(of: liveAIManager.currentTranscript) { _, _ in
                             withAnimation {
                                 proxy.scrollTo("current", anchor: .bottom)
                             }
@@ -99,74 +92,46 @@ struct LiveAIView: View {
             }
         }
         .task {
-            // 只有设备连接时才启动功能
-            guard streamViewModel.hasActiveDevice else {
-                print("⚠️ LiveAIView: 未连接RayBan Meta眼镜，跳过启动")
-                return
-            }
-
-            // A previous feature may have left a DAT camera session active.
-            // Live AI always enters voice-only, so release that session before
-            // connecting the realtime audio service.
-            if streamViewModel.streamingStatus != .stopped {
-                await streamViewModel.stopSession()
-            }
-            guard !Task.isCancelled else { return }
-            // 自动连接并开始录音。纯语音模式不启动视频帧轮询。
-            viewModel.connect()
-        }
-        .onDisappear {
-            // 停止 AI 对话和视频流
-            print("🎥 LiveAIView: 停止 AI 对话和视频流")
-            stopFrameUpdates()
-            viewModel.disconnect()
-            Task {
+            // 会话唯一启动点。设备校验由 LiveAIManager 统一负责：
+            // 未连接眼镜时经 failFatal 走错误弹窗 + TTS，而不是静默返回。
+            if !liveAIManager.isRunning {
+                // A previous feature may have left a DAT camera session active.
+                // Live AI always enters voice-only, so release that session
+                // before connecting the realtime audio service.
                 if streamViewModel.streamingStatus != .stopped {
                     await streamViewModel.stopSession()
                 }
+                guard !Task.isCancelled else { return }
+                await liveAIManager.startLiveAISession()
             }
         }
-        .onChange(of: viewModel.isConnected) { _, isConnected in
-            if isConnected, !viewModel.isRecording {
-                viewModel.startRecording()
+        .onDisappear {
+            // 关闭界面即结束会话
+            print("🎥 LiveAIView: 停止 AI 对话和视频流")
+            Task { @MainActor in
+                await liveAIManager.stopSession()
             }
         }
-        .onChange(of: viewModel.inputMode) { _, mode in
-            if mode == .vision {
-                startFrameUpdates()
-            } else {
-                stopFrameUpdates()
+        .onChange(of: liveAIManager.isRunning) { _, isRunning in
+            // 仅"正常停止"（StopLiveAIIntent 或用户操作）自动关闭页面；
+            // 失败时保留页面等待用户确认错误弹窗
+            if !isRunning && liveAIManager.stopReason == .stopped {
+                dismiss()
             }
         }
-        .onChange(of: streamViewModel.streamingStatus) { _, status in
-            guard viewModel.inputMode == .vision, status != .streaming else { return }
-            viewModel.handleVisionStreamFailure()
-        }
-        .alert("error".localized, isPresented: $viewModel.showError) {
+        .alert("error".localized, isPresented: $liveAIManager.showError) {
             Button("ok".localized) {
-                viewModel.dismissError()
+                liveAIManager.dismissError()
+                // 会话已因失败终止时，确认错误后关闭页面
+                if !liveAIManager.isRunning {
+                    dismiss()
+                }
             }
         } message: {
-            if let error = viewModel.errorMessage {
+            if let error = liveAIManager.errorMessage {
                 Text(error)
             }
         }
-    }
-
-    private func startFrameUpdates() {
-        frameTimer?.invalidate()
-        frameTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            Task { @MainActor in
-                guard viewModel.inputMode == .vision,
-                      let frame = streamViewModel.currentVideoFrame else { return }
-                viewModel.updateVideoFrame(frame)
-            }
-        }
-    }
-
-    private func stopFrameUpdates() {
-        frameTimer?.invalidate()
-        frameTimer = nil
     }
 
     // MARK: - Header
@@ -194,15 +159,15 @@ struct LiveAIView: View {
             // Connection status
             HStack(spacing: AppSpacing.xs) {
                 Circle()
-                    .fill(viewModel.isConnected ? Color.green : Color.red)
+                    .fill(liveAIManager.isConnected ? Color.green : Color.red)
                     .frame(width: 8, height: 8)
-                Text(viewModel.isConnected ? "liveai.connected".localized : "liveai.connecting".localized)
+                Text(liveAIManager.isConnected ? "liveai.connected".localized : "liveai.connecting".localized)
                     .font(AppTypography.caption)
                     .foregroundColor(.white)
             }
 
             // Speaking indicator
-            if viewModel.isSpeaking {
+            if liveAIManager.isSpeaking {
                 HStack(spacing: AppSpacing.xs) {
                     Image(systemName: "waveform")
                         .foregroundColor(.green)
@@ -220,12 +185,12 @@ struct LiveAIView: View {
 
     private var controlsView: some View {
         VStack(spacing: AppSpacing.md) {
-            if viewModel.responseState != .idle {
+            if liveAIManager.responseState != .idle {
                 HStack(spacing: AppSpacing.sm) {
                     Circle()
-                        .fill(viewModel.responseState == .failed ? Color.red : Color.orange)
+                        .fill(liveAIManager.responseState == .failed ? Color.red : Color.orange)
                         .frame(width: 8, height: 8)
-                    Text(viewModel.responseState.displayName)
+                    Text(liveAIManager.responseState.displayName)
                         .font(AppTypography.caption)
                         .foregroundColor(.white)
                 }
@@ -237,7 +202,7 @@ struct LiveAIView: View {
 
             // Recording status
             HStack(spacing: AppSpacing.sm) {
-                if viewModel.isRecording {
+                if liveAIManager.isRecording {
                     Circle()
                         .fill(Color.red)
                         .frame(width: 8, height: 8)
@@ -253,15 +218,19 @@ struct LiveAIView: View {
                         .foregroundColor(.white)
                 }
             }
-            .padding(.horizontal, AppSpacing.md)
+            .padding(.horizontal, AppSpacing.sm)
             .padding(.vertical, AppSpacing.sm)
             .background(Color.black.opacity(0.6))
             .cornerRadius(AppCornerRadius.xl)
 
             // Stop button (only button)
             Button {
-                viewModel.disconnect()
-                dismiss()
+                // 只负责停止会话；stopSession 会先发布 stopReason = .stopped，
+                // 再由 onChange(isRunning) 统一关闭页面，避免手动 dismiss
+                // 与 onDisappear 各自触发一次清理造成并发重复执行
+                Task { @MainActor in
+                    await liveAIManager.stopSession()
+                }
             } label: {
                 HStack(spacing: AppSpacing.sm) {
                     Image(systemName: "stop.fill")
@@ -290,9 +259,9 @@ struct LiveAIView: View {
     private var inputModeView: some View {
         VStack(spacing: AppSpacing.xs) {
             Picker("liveai.input.mode".localized, selection: Binding(
-                get: { viewModel.inputMode },
+                get: { liveAIManager.inputMode },
                 set: { mode in
-                    Task { await viewModel.switchInputMode(to: mode) }
+                    Task { await liveAIManager.switchInputMode(to: mode) }
                 })) {
                 ForEach(LiveAIInputMode.allCases) { mode in
                     Label(mode.displayName, systemImage: mode.icon)
@@ -300,13 +269,13 @@ struct LiveAIView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .disabled(viewModel.isSwitchingInputMode)
+            .disabled(liveAIManager.isSwitchingInputMode)
 
             HStack(spacing: AppSpacing.xs) {
-                Image(systemName: viewModel.inputMode.icon)
-                Text(viewModel.inputMode.privacyDescription)
-                if viewModel.inputMode == .vision {
-                    Text("· " + String(format: "liveai.input.vision.count".localized, viewModel.sentImageCount))
+                Image(systemName: liveAIManager.inputMode.icon)
+                Text(liveAIManager.inputMode.privacyDescription)
+                if liveAIManager.inputMode == .vision {
+                    Text("· " + String(format: "liveai.input.vision.count".localized, liveAIManager.sentImageCount))
                 }
             }
             .font(AppTypography.caption)
