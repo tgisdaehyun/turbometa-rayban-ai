@@ -5,6 +5,66 @@
 
 import Foundation
 
+// MARK: - Live AI Response State
+
+/// Provider-neutral state used by the foreground screen and the background
+/// LiveAIManager. `waiting` includes model-side work such as web search; the
+/// user should hear the eventual answer from the realtime audio stream.
+enum LiveAIResponseState: String, Equatable {
+    case idle
+    case waiting
+    case playing
+    case failed
+
+    var displayName: String {
+        switch self {
+        case .idle:
+            return "liveai.status.ready".localized
+        case .waiting:
+            return "liveai.status.searching".localized
+        case .playing:
+            return "liveai.status.answering".localized
+        case .failed:
+            return "liveai.status.failed".localized
+        }
+    }
+}
+
+enum LiveAIWebSearchPolicy {
+    /// Keep replies suitable for a user who may only hear the response
+    /// through the glasses. Search is enabled at the provider level; this
+    /// prompt only controls how the answer is spoken.
+    static var instructions: String {
+        if LanguageManager.staticIsChinese {
+            return "\n\n【联网搜索与语音】遇到天气、新闻、价格、赛程或其他时效性问题时，使用联网搜索核实后再回答。先给结论并说明时间，不要朗读网址、引用编号或冗长来源。请用简短、自然、适合眼镜播报的口语回答。"
+        }
+        return "\n\n[WEB SEARCH AND VOICE] Use web search to verify weather, news, prices, schedules, and other time-sensitive questions before answering. Lead with the conclusion and mention the relevant time. Do not read URLs, citation numbers, or long source lists aloud. Keep answers short, natural, and suitable for glasses audio."
+    }
+}
+
+enum LiveAIErrorMessage {
+    /// Keep raw provider errors visible in the UI/logs, but use a short,
+    /// actionable localized phrase for audio output. This prevents server
+    /// diagnostics (URLs, status codes, or model internals) from being read
+    /// aloud through the glasses.
+    static func speech(for rawMessage: String) -> String {
+        let message = rawMessage.lowercased()
+        if message.contains("workspace") || message.contains("业务空间") {
+            return "liveai.error.alibaba.workspace".localized
+        }
+        if message.contains("api key") || message.contains("apikey") ||
+            message.contains("unauthorized") || message.contains("401") {
+            return "liveai.error.apikey".localized
+        }
+        if message.contains("network") || message.contains("receive") ||
+            message.contains("send") || message.contains("timeout") ||
+            message.contains("连接") || message.contains("联网") {
+            return "liveai.error.network".localized
+        }
+        return "liveai.error.generic".localized
+    }
+}
+
 // MARK: - Live AI Input Mode
 
 /// Controls whether a realtime Live AI session may access the glasses camera.

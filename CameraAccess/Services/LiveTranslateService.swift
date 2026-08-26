@@ -123,9 +123,11 @@ class LiveTranslateService: NSObject {
     /// Alibaba's current recommended LiveTranslate model. The old qwen3
     /// endpoint could emit cumulative responses without a reliable item graph.
     private let model = "qwen3.5-livetranslate-flash-realtime"
-    // 根据用户设置的区域动态获取 WebSocket URL
+    // Live Translate is always backed by Alibaba. Do not reuse the general
+    // Live AI provider URL because that may point to Gemini or require the
+    // Qwen web-search workspace host.
     private var baseURL: String {
-        return APIProviderManager.staticLiveAIWebsocketURL
+        APIProviderManager.staticLiveTranslateWebsocketURL
     }
 
     // Audio Engine (for recording)

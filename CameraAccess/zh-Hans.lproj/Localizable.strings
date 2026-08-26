@@ -49,6 +49,14 @@
 "liveai.device.notconnected.title" = "未连接RayBan Meta眼镜";
 "liveai.device.notconnected.message" = "请先在首页连接你的智能眼镜，\n然后再使用Live AI功能";
 "liveai.device.backtohome" = "返回首页";
+"liveai.status.ready" = "准备就绪";
+"liveai.status.searching" = "正在获取最新信息…";
+"liveai.status.answering" = "正在回答";
+"liveai.status.failed" = "暂时无法回答";
+"liveai.error.alibaba.workspace" = "请先在 Live AI 设置中填写正确的百炼业务空间 ID。";
+"liveai.error.apikey" = "请先在设置中配置 Live AI API Key。";
+"liveai.error.network" = "联网服务暂时不可用，请稍后再试。";
+"liveai.error.generic" = "Live AI 暂时无法完成请求，请稍后再试。";
 
 // MARK: - Quick Vision
 "quickvision.title" = "快速识图";
@@ -175,12 +183,15 @@
 "settings.liveai" = "Live AI";
 "settings.liveai.engine" = "实时对话引擎";
 "settings.liveai.model" = "实时模型";
-"settings.liveai.engine.description" = "仅影响 Live AI 的实时语音与可选视觉对话；不影响图片识别。";
+"settings.liveai.engine.description" = "影响 Live AI 的实时语音、可选视觉对话和联网搜索；不影响图片识别。";
 "settings.liveai.provider" = "Live AI 提供商";
 "settings.liveai.provider.select" = "选择 Live AI 提供商";
 "settings.liveai.provider.description" = "选择用于实时语音对话的 AI 提供商";
-"settings.liveai.alibaba.desc" = "通义千问 Omni 实时音频模型";
-"settings.liveai.google.desc" = "Gemini Live 实时音频模型";
+"settings.liveai.alibaba.desc" = "支持联网搜索的通义千问 Omni 实时音频模型";
+"settings.liveai.google.desc" = "支持 Google Search 的 Gemini Live 实时音频模型";
+"settings.liveai.alibaba.workspace" = "百炼业务空间 ID";
+"settings.liveai.alibaba.workspace.placeholder" = "业务空间 ID";
+"settings.liveai.alibaba.workspace.description" = "Qwen3.5 实时模型必填，可在百炼控制台查看；只能使用字母、数字和连字符。";
 
 // Live AI input/privacy
 "liveai.input.mode" = "输入模式";

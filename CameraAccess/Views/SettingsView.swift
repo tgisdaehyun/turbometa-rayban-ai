@@ -1119,6 +1119,31 @@ struct LiveAIProviderSettingsView: View {
                     Text("settings.liveai.engine.description".localized)
                 }
 
+                if providerManager.liveAIProvider == .alibaba {
+                    Section {
+                        TextField(
+                            "settings.liveai.alibaba.workspace.placeholder".localized,
+                            text: $providerManager.alibabaWorkspaceID
+                        )
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.body.monospaced())
+                        if !providerManager.alibabaWorkspaceID.isEmpty,
+                           !providerManager.hasValidAlibabaWorkspaceID {
+                            Label(
+                                "liveai.error.alibaba.workspace".localized,
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .font(AppTypography.caption)
+                            .foregroundColor(.red)
+                        }
+                    } header: {
+                        Text("settings.liveai.alibaba.workspace".localized)
+                    } footer: {
+                        Text("settings.liveai.alibaba.workspace.description".localized)
+                    }
+                }
+
                 // API Key status
                 Section {
                     HStack {

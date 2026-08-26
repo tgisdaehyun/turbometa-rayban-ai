@@ -19,6 +19,7 @@ class OmniRealtimeViewModel: ObservableObject {
     @Published var conversationHistory: [ConversationMessage] = []
     @Published var errorMessage: String?
     @Published var showError = false
+    @Published private(set) var responseState: LiveAIResponseState = .idle
     /// Realtime sessions start in voice-only mode. Camera access is opt-in.
     @Published private(set) var inputMode: LiveAIInputMode = .voice
     @Published private(set) var sentImageCount = 0
@@ -29,6 +30,7 @@ class OmniRealtimeViewModel: ObservableObject {
     private var geminiService: GeminiLiveService?
     private let provider: LiveAIProvider
     private let apiKey: String
+    private let model: String
     private weak var streamViewModel: StreamSessionViewModel?
 
     // Video frame
@@ -36,18 +38,21 @@ class OmniRealtimeViewModel: ObservableObject {
     private var hasSentFirstAudio = false
     private var isImageSendingEnabled = false
     private var initialInputMode: LiveAIInputMode = .voice
+    private let tts = TTSService.shared
+    private var lastSpokenErrorAt: Date?
 
     init(apiKey: String, streamViewModel: StreamSessionViewModel? = nil) {
         self.apiKey = apiKey
         self.provider = APIProviderManager.staticLiveAIProvider
+        self.model = APIProviderManager.staticLiveAIModel
         self.streamViewModel = streamViewModel
 
         // Initialize appropriate service based on provider
         switch provider {
         case .alibaba:
-            self.omniService = OmniRealtimeService(apiKey: apiKey)
+            self.omniService = OmniRealtimeService(apiKey: apiKey, model: model)
         case .google:
-            self.geminiService = GeminiLiveService(apiKey: apiKey)
+            self.geminiService = GeminiLiveService(apiKey: apiKey, model: model)
         }
 
         setupCallbacks()
@@ -80,6 +85,12 @@ class OmniRealtimeViewModel: ObservableObject {
         omniService.onConnected = { [weak self] in
             Task { @MainActor in
                 self?.isConnected = true
+            }
+        }
+
+        omniService.onResponseState = { [weak self] state in
+            Task { @MainActor in
+                self?.responseState = state
             }
         }
 
@@ -147,8 +158,7 @@ class OmniRealtimeViewModel: ObservableObject {
 
         omniService.onError = { [weak self] error in
             Task { @MainActor in
-                self?.errorMessage = error
-                self?.showError = true
+                self?.handleServiceError(error)
             }
         }
     }
@@ -159,6 +169,12 @@ class OmniRealtimeViewModel: ObservableObject {
         geminiService.onConnected = { [weak self] in
             Task { @MainActor in
                 self?.isConnected = true
+            }
+        }
+
+        geminiService.onResponseState = { [weak self] state in
+            Task { @MainActor in
+                self?.responseState = state
             }
         }
 
@@ -232,8 +248,7 @@ class OmniRealtimeViewModel: ObservableObject {
 
         geminiService.onError = { [weak self] (error: String) in
             Task { @MainActor in
-                self?.errorMessage = error
-                self?.showError = true
+                self?.handleServiceError(error)
             }
         }
     }
@@ -296,6 +311,7 @@ class OmniRealtimeViewModel: ObservableObject {
 
     private func fallbackToVoice(_ message: String) {
         inputMode = .voice
+        responseState = .idle
         isImageSendingEnabled = false
         currentVideoFrame = nil
         errorMessage = message
@@ -331,6 +347,7 @@ class OmniRealtimeViewModel: ObservableObject {
         // Every new realtime session starts voice-only. A caller must opt in
         // to visual context through setInputMode(.vision).
         inputMode = .voice
+        responseState = .idle
         isImageSendingEnabled = false
         hasSentFirstAudio = false
         sentImageCount = 0
@@ -369,6 +386,7 @@ class OmniRealtimeViewModel: ObservableObject {
         }
 
         isConnected = false
+        responseState = .idle
         hasSentFirstAudio = false
     }
 
@@ -379,17 +397,9 @@ class OmniRealtimeViewModel: ObservableObject {
             return
         }
 
-        let aiModel: String
-        switch provider {
-        case .alibaba:
-            aiModel = "qwen3-omni-flash-realtime"
-        case .google:
-            aiModel = "gemini-2.0-flash-exp"
-        }
-
         let record = ConversationRecord(
             messages: conversationHistory,
-            aiModel: aiModel,
+            aiModel: model,
             language: "zh-CN", // TODO: 从设置中获取
             initialInputMode: initialInputMode,
             visionFrameCount: sentImageCount
@@ -451,6 +461,22 @@ class OmniRealtimeViewModel: ObservableObject {
 
     func dismissError() {
         showError = false
+    }
+
+    private func handleServiceError(_ message: String) {
+        stopRecording()
+        responseState = .failed
+        errorMessage = message
+        showError = true
+
+        let now = Date()
+        if let lastSpokenErrorAt,
+           now.timeIntervalSince(lastSpokenErrorAt) < 3 {
+            return
+        }
+        lastSpokenErrorAt = now
+        tts.prepareAudioSession(mode: .automatic)
+        tts.speak(LiveAIErrorMessage.speech(for: message), mode: .automatic)
     }
 
     nonisolated deinit {

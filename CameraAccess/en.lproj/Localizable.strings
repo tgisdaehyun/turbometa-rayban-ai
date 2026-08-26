@@ -49,6 +49,14 @@
 "liveai.device.notconnected.title" = "RayBan Meta Glasses Not Connected";
 "liveai.device.notconnected.message" = "Please connect your smart glasses on the home screen first,\nthen use the Live AI feature";
 "liveai.device.backtohome" = "Back to Home";
+"liveai.status.ready" = "Ready";
+"liveai.status.searching" = "Getting the latest information...";
+"liveai.status.answering" = "Answering";
+"liveai.status.failed" = "Unable to answer";
+"liveai.error.alibaba.workspace" = "Enter a valid Bailian workspace ID in Live AI settings before connecting.";
+"liveai.error.apikey" = "Please configure your Live AI API key in Settings.";
+"liveai.error.network" = "The network service is temporarily unavailable. Please try again later.";
+"liveai.error.generic" = "Live AI could not complete that request. Please try again.";
 
 // MARK: - Quick Vision
 "quickvision.title" = "Quick Vision";
@@ -175,12 +183,15 @@
 "settings.liveai" = "Live AI";
 "settings.liveai.engine" = "Real-time Conversation Engine";
 "settings.liveai.model" = "Real-time Model";
-"settings.liveai.engine.description" = "Affects Live AI voice and optional vision chat only; image recognition is separate.";
+"settings.liveai.engine.description" = "Affects Live AI voice, optional vision chat, and built-in web search; image recognition is separate.";
 "settings.liveai.provider" = "Live AI Provider";
 "settings.liveai.provider.select" = "Select Live AI Provider";
 "settings.liveai.provider.description" = "Choose the provider for real-time voice chat";
-"settings.liveai.alibaba.desc" = "Qwen Omni real-time audio model";
-"settings.liveai.google.desc" = "Gemini Live real-time audio model";
+"settings.liveai.alibaba.desc" = "Qwen Omni real-time audio model with web search";
+"settings.liveai.google.desc" = "Gemini Live real-time audio model with Google Search";
+"settings.liveai.alibaba.workspace" = "Bailian Workspace ID";
+"settings.liveai.alibaba.workspace.placeholder" = "Workspace ID";
+"settings.liveai.alibaba.workspace.description" = "Required for Qwen3.5 realtime. Find it in the Bailian console; use letters, numbers, or hyphens only.";
 
 // Live AI input/privacy
 "liveai.input.mode" = "Input Mode";

@@ -22,7 +22,7 @@ struct ConversationRecord: Identifiable, Codable {
         id: UUID = UUID(),
         timestamp: Date = Date(),
         messages: [ConversationMessage],
-        aiModel: String = "qwen3-omni-flash-realtime",
+        aiModel: String = "qwen3.5-omni-flash-realtime",
         language: String = "zh-CN",
         initialInputMode: LiveAIInputMode? = nil,
         visionFrameCount: Int? = nil

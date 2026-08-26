@@ -38,13 +38,62 @@ enum OmniServerEvent: String {
 
 class OmniRealtimeService: NSObject {
 
+    static let realtimeInputSampleRate = 16000.0
+
+    static func resampledFrameCount(
+        inputFrameCount: Int,
+        inputSampleRate: Double,
+        targetSampleRate: Double = realtimeInputSampleRate
+    ) -> Int {
+        guard inputFrameCount > 0, inputSampleRate > 0, targetSampleRate > 0 else {
+            return 0
+        }
+        return Int((Double(inputFrameCount) * targetSampleRate / inputSampleRate).rounded(.up))
+    }
+
+    /// Pure configuration builder kept internal so protocol changes can be
+    /// covered without opening a real WebSocket in unit tests.
+    static func sessionFields(
+        instructions: String,
+        voice: String = "Tina"
+    ) -> [String: Any] {
+        [
+            "modalities": ["text", "audio"],
+            "voice": voice,
+            "instructions": instructions,
+            "audio": [
+                "input": [
+                    "format": [
+                            "type": "pcm",
+                            "sample_rate": Int(realtimeInputSampleRate)
+                    ]
+                ],
+                "output": [
+                    "format": [
+                        "type": "pcm",
+                        "sample_rate": 24000
+                    ]
+                ]
+            ],
+            "enable_search": true,
+            "search_options": [
+                "enable_source": false
+            ],
+            "turn_detection": [
+                "type": "server_vad",
+                "threshold": 0.5,
+                "silence_duration_ms": 800
+            ]
+        ]
+    }
+
     // WebSocket
     private var webSocket: URLSessionWebSocketTask?
     private var urlSession: URLSession?
 
     // Configuration
     private let apiKey: String
-    private let model = "qwen3-omni-flash-realtime"
+    private let model: String
     // 根据用户设置的区域动态获取 WebSocket URL（北京/新加坡）
     private var baseURL: String {
         return APIProviderManager.staticLiveAIWebsocketURL
@@ -52,6 +101,11 @@ class OmniRealtimeService: NSObject {
 
     // Audio Engine (for recording)
     private var audioEngine: AVAudioEngine?
+    private let recordTargetFormat = AVAudioFormat(
+        standardFormatWithSampleRate: OmniRealtimeService.realtimeInputSampleRate,
+        channels: 1
+    )
+    private var recordConverter: AVAudioConverter?
 
     // Audio Playback Engine (separate engine for playback)
     private var playbackEngine: AVAudioEngine?
@@ -78,14 +132,16 @@ class OmniRealtimeService: NSObject {
     var onError: ((String) -> Void)?
     var onConnected: (() -> Void)?
     var onFirstAudioSent: (() -> Void)?
+    var onResponseState: ((LiveAIResponseState) -> Void)?
 
     // State
     private var isRecording = false
     private var hasAudioBeenSent = false
     private var eventIdCounter = 0
 
-    init(apiKey: String) {
+    init(apiKey: String, model: String? = nil) {
         self.apiKey = apiKey
+        self.model = model ?? APIProviderManager.staticLiveAIModel
         super.init()
         setupAudioEngine()
     }
@@ -151,11 +207,19 @@ class OmniRealtimeService: NSObject {
     // MARK: - WebSocket Connection
 
     func connect() {
+        guard !baseURL.isEmpty else {
+            let message = "liveai.error.alibaba.workspace".localized
+            print("❌ [Omni] \(message)")
+            onResponseState?(.failed)
+            onError?(message)
+            return
+        }
         let urlString = "\(baseURL)?model=\(model)"
         print("🔌 [Omni] 准备连接 WebSocket: \(urlString)")
 
         guard let url = URL(string: urlString) else {
             print("❌ [Omni] 无效的 URL")
+            onResponseState?(.failed)
             onError?("Invalid URL")
             return
         }
@@ -187,28 +251,19 @@ class OmniRealtimeService: NSObject {
 
     private func configureSession() {
         // 根据当前语言设置获取语音和提示词
-        let voice = LanguageManager.staticTtsVoice
+        // Tina is the Qwen3.5 Omni realtime voice used by this product. Keep
+        // it independent from the standalone TTS voice preference.
+        let voice = "Tina"
         // Every realtime session starts voice-only. The appended constraint
         // also explains how to treat an image if the user opts into vision
         // later without reconnecting this WebSocket.
         let instructions = LiveAIModeManager.staticSystemPrompt(inputMode: .voice)
+            + LiveAIWebSearchPolicy.instructions
 
         let sessionConfig: [String: Any] = [
             "event_id": generateEventId(),
             "type": OmniClientEvent.sessionUpdate.rawValue,
-            "session": [
-                "modalities": ["text", "audio"],
-                "voice": voice,
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm24",
-                "smooth_output": true,
-                "instructions": instructions,
-                "turn_detection": [
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "silence_duration_ms": 800
-                ]
-            ]
+            "session": Self.sessionFields(instructions: instructions, voice: voice)
         ]
 
         sendEvent(sessionConfig)
@@ -249,10 +304,16 @@ class OmniRealtimeService: NSObject {
 
             let inputNode = engine.inputNode
             let inputFormat = inputNode.outputFormat(forBus: 0)
+            if let recordTargetFormat {
+                recordConverter = AVAudioConverter(from: inputFormat, to: recordTargetFormat)
+            } else {
+                recordConverter = nil
+            }
 
-            // Convert to PCM16 24kHz mono
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, time in
-                self?.processAudioBuffer(buffer)
+            // Qwen3.5 expects 16 kHz mono PCM. iPhone input commonly runs at
+            // 48 kHz, so always resample before appending the WebSocket chunk.
+            inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+                self?.processAudioBuffer(buffer, inputFormat: inputFormat)
             }
 
             engine.prepare()
@@ -279,13 +340,43 @@ class OmniRealtimeService: NSObject {
         hasAudioBeenSent = false
     }
 
-    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        // Convert Float32 audio to PCM16 format
-        guard let floatChannelData = buffer.floatChannelData else {
+    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer, inputFormat: AVAudioFormat) {
+        guard let recordConverter, let recordTargetFormat else {
             return
         }
 
-        let frameLength = Int(buffer.frameLength)
+        let targetFrameCapacity = AVAudioFrameCount(
+            max(1, Self.resampledFrameCount(
+                inputFrameCount: Int(buffer.frameLength),
+                inputSampleRate: inputFormat.sampleRate,
+                targetSampleRate: recordTargetFormat.sampleRate
+            ))
+        )
+        guard let converted = AVAudioPCMBuffer(
+            pcmFormat: recordTargetFormat,
+            frameCapacity: targetFrameCapacity
+        ) else {
+            return
+        }
+
+        var hasProvidedInput = false
+        var conversionError: NSError?
+        let status = recordConverter.convert(to: converted, error: &conversionError) { _, outStatus in
+            if hasProvidedInput {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            hasProvidedInput = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        guard conversionError == nil, status != .error,
+              let floatChannelData = converted.floatChannelData else {
+            return
+        }
+
+        let frameLength = Int(converted.frameLength)
         let channel = floatChannelData.pointee
 
         // Convert Float32 (-1.0 to 1.0) to Int16 (-32768 to 32767)
@@ -373,8 +464,19 @@ class OmniRealtimeService: NSObject {
                 self?.receiveMessage() // Continue receiving
 
             case .failure(let error):
-                print("❌ [Omni] 接收消息失败: \(error.localizedDescription)")
-                self?.onError?("Receive error: \(error.localizedDescription)")
+                let statusCode = (self?.webSocket?.response as? HTTPURLResponse)?.statusCode
+                let nsError = error as NSError
+                print(
+                    "❌ [Omni] 接收消息失败: \(error.localizedDescription), "
+                    + "http=\(statusCode.map(String.init) ?? "unknown"), "
+                    + "domain=\(nsError.domain), code=\(nsError.code)"
+                )
+                self?.onResponseState?(.failed)
+                if statusCode == 401 || statusCode == 403 {
+                    self?.onError?("Unauthorized: API Key does not match the selected region or workspace")
+                } else {
+                    self?.onError?("Receive error: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -403,9 +505,15 @@ class OmniRealtimeService: NSObject {
             guard let self else { return }
 
             switch type {
-            case OmniServerEvent.sessionCreated.rawValue,
-                 OmniServerEvent.sessionUpdated.rawValue:
-                print("✅ [Omni] 会话已建立")
+            case OmniServerEvent.sessionCreated.rawValue:
+                // Wait for session.updated before allowing the caller to
+                // start recording. Qwen3.5 audio/search settings must be
+                // accepted before the first audio buffer is appended.
+                print("✅ [Omni] 会话已创建，等待配置生效")
+
+            case OmniServerEvent.sessionUpdated.rawValue:
+                print("✅ [Omni] 会话配置已生效")
+                self.onResponseState?(.idle)
                 self.onConnected?()
 
             case OmniServerEvent.inputAudioBufferSpeechStarted.rawValue:
@@ -414,6 +522,7 @@ class OmniRealtimeService: NSObject {
 
             case OmniServerEvent.inputAudioBufferSpeechStopped.rawValue:
                 print("🛑 [Omni] 检测到语音停止")
+                self.onResponseState?(.waiting)
                 self.onSpeechStopped?()
 
             case OmniServerEvent.responseAudioTranscriptDelta.rawValue:
@@ -423,7 +532,11 @@ class OmniRealtimeService: NSObject {
                 }
 
             case OmniServerEvent.responseAudioTranscriptDone.rawValue:
-                let text = json["text"] as? String ?? ""
+                // Qwen3.5 uses `transcript`; `text` is retained for older
+                // realtime snapshots and compatible gateways.
+                let text = (json["transcript"] as? String)
+                    ?? (json["text"] as? String)
+                    ?? ""
                 if text.isEmpty {
                     print("⚠️ [Omni] AI回复完成但done事件无text字段（使用累积的delta）")
                 } else {
@@ -435,6 +548,7 @@ class OmniRealtimeService: NSObject {
             case OmniServerEvent.responseAudioDelta.rawValue:
                 if let base64Audio = json["delta"] as? String,
                    let audioData = Data(base64Encoded: base64Audio) {
+                    self.onResponseState?(.playing)
                     self.onAudioDelta?(audioData)
 
                     // Buffer audio chunks
@@ -485,6 +599,7 @@ class OmniRealtimeService: NSObject {
 
                 self.audioChunkCount = 0
                 self.hasStartedPlaying = false
+                self.onResponseState?(.idle)
                 self.onAudioDone?()
 
             case OmniServerEvent.conversationItemInputAudioTranscriptionCompleted.rawValue:
@@ -502,6 +617,7 @@ class OmniRealtimeService: NSObject {
                 if let error = json["error"] as? [String: Any],
                    let message = error["message"] as? String {
                     print("❌ [Omni] 服务器错误: \(message)")
+                    self.onResponseState?(.failed)
                     self.onError?(message)
                 }
 

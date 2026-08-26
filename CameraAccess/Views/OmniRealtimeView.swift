@@ -162,6 +162,21 @@ struct OmniRealtimeView: View {
 
     private var controlsView: some View {
         VStack(spacing: 12) {
+            if viewModel.responseState != .idle {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(viewModel.responseState == .failed ? Color.red : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(viewModel.responseState.displayName)
+                        .font(.caption)
+                        .foregroundColor(.white)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.6))
+                .cornerRadius(20)
+            }
+
             // Speaking indicator
             if viewModel.isSpeaking {
                 HStack(spacing: 8) {

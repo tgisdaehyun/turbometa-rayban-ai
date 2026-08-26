@@ -1112,3 +1112,98 @@ final class TranslationSessionBuilderTests: XCTestCase {
     XCTAssertEqual(session?.previewText, "你好")
   }
 }
+
+final class LiveAIWebSearchConfigurationTests: XCTestCase {
+
+  func testLiveTranslateEndpointStaysIndependentFromWorkspaceSearchEndpoint() {
+    XCTAssertEqual(
+      AlibabaEndpoint.beijing.websocketURL,
+      "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+    )
+    XCTAssertEqual(
+      AlibabaEndpoint.singapore.websocketURL,
+      "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime"
+    )
+  }
+
+  func testWorkspaceIDValidationAndScopedEndpoints() {
+    XCTAssertTrue(AlibabaEndpoint.isValidWorkspaceID("workspace-123"))
+    XCTAssertFalse(AlibabaEndpoint.isValidWorkspaceID("workspace_123"))
+    XCTAssertFalse(AlibabaEndpoint.isValidWorkspaceID("https://workspace"))
+    XCTAssertFalse(AlibabaEndpoint.isValidWorkspaceID("-workspace"))
+    XCTAssertFalse(AlibabaEndpoint.isValidWorkspaceID("workspace-"))
+    XCTAssertFalse(AlibabaEndpoint.isValidWorkspaceID(String(repeating: "a", count: 64)))
+
+    XCTAssertEqual(
+      AlibabaEndpoint.beijing.websocketURL(workspaceID: "workspace-123"),
+      "wss://workspace-123.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime"
+    )
+    XCTAssertEqual(
+      AlibabaEndpoint.singapore.websocketURL(workspaceID: "workspace-123"),
+      "wss://workspace-123.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime"
+    )
+  }
+
+  func testRealtimeModelsUseSearchCapableDefaults() {
+    XCTAssertEqual(LiveAIProvider.alibaba.defaultModel, "qwen3.5-omni-flash-realtime")
+    XCTAssertEqual(LiveAIProvider.google.defaultModel, "gemini-3.1-flash-live-preview")
+  }
+
+  func testQwenSessionUsesNativeAudioAndWebSearchWithoutTools() throws {
+    let fields = OmniRealtimeService.sessionFields(instructions: "test")
+    XCTAssertEqual(fields["voice"] as? String, "Tina")
+    XCTAssertEqual(fields["enable_search"] as? Bool, true)
+    XCTAssertNil(fields["tools"])
+    XCTAssertNil(fields["smooth_output"])
+    XCTAssertNil(fields["input_audio_transcription"])
+
+    let audio = try XCTUnwrap(fields["audio"] as? [String: Any])
+    let input = try XCTUnwrap(audio["input"] as? [String: Any])
+    let inputFormat = try XCTUnwrap(input["format"] as? [String: Any])
+    XCTAssertEqual(inputFormat["type"] as? String, "pcm")
+    XCTAssertEqual(inputFormat["sample_rate"] as? Int, 16000)
+    let output = try XCTUnwrap(audio["output"] as? [String: Any])
+    let outputFormat = try XCTUnwrap(output["format"] as? [String: Any])
+    XCTAssertEqual(outputFormat["sample_rate"] as? Int, 24000)
+  }
+
+  func testQwenInputResamplingMatchesDeclared16KHzFormat() {
+    XCTAssertEqual(OmniRealtimeService.realtimeInputSampleRate, 16000)
+    XCTAssertEqual(
+      OmniRealtimeService.resampledFrameCount(inputFrameCount: 4800, inputSampleRate: 48000),
+      1600
+    )
+    XCTAssertEqual(
+      OmniRealtimeService.resampledFrameCount(inputFrameCount: 1600, inputSampleRate: 16000),
+      1600
+    )
+  }
+
+  func testGeminiSetupIncludesGoogleSearchAndAudioTranscripts() throws {
+    let fields = GeminiLiveService.setupFields(model: "gemini-3.1-flash-live-preview", instructions: "test")
+    XCTAssertEqual(fields["model"] as? String, "models/gemini-3.1-flash-live-preview")
+    let tools = try XCTUnwrap(fields["tools"] as? [[String: Any]])
+    XCTAssertNotNil(tools.first?["googleSearch"] as? [String: Any])
+    XCTAssertNotNil(fields["inputAudioTranscription"] as? [String: Any])
+    XCTAssertNotNil(fields["outputAudioTranscription"] as? [String: Any])
+    XCTAssertEqual(
+      (fields["generationConfig"] as? [String: Any])?["responseModalities"] as? [String],
+      ["AUDIO"]
+    )
+  }
+
+  func testGeminiRealtimeInputsUseCurrentAudioAndVideoFields() throws {
+    let audioMessage = GeminiLiveService.realtimeAudioInput("audio-data")
+    let realtimeAudio = try XCTUnwrap(audioMessage["realtimeInput"] as? [String: Any])
+    XCTAssertNil(realtimeAudio["mediaChunks"])
+    let audio = try XCTUnwrap(realtimeAudio["audio"] as? [String: Any])
+    XCTAssertEqual(audio["data"] as? String, "audio-data")
+    XCTAssertEqual(audio["mimeType"] as? String, "audio/pcm;rate=16000")
+
+    let videoMessage = GeminiLiveService.realtimeVideoInput("image-data")
+    let realtimeVideo = try XCTUnwrap(videoMessage["realtimeInput"] as? [String: Any])
+    let video = try XCTUnwrap(realtimeVideo["video"] as? [String: Any])
+    XCTAssertEqual(video["data"] as? String, "image-data")
+    XCTAssertEqual(video["mimeType"] as? String, "image/jpeg")
+  }
+}

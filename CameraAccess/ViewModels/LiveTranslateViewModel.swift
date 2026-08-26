@@ -212,7 +212,9 @@ class LiveTranslateViewModel: ObservableObject {
     }
 
     private func connectFreshService() {
-        let apiKey = APIProviderManager.staticLiveAIAPIKey
+        // Translation is Alibaba-only and must keep working regardless of the
+        // provider selected for general Live AI chat.
+        let apiKey = APIProviderManager.staticAlibabaAPIKey
         guard !apiKey.isEmpty else {
             errorMessage = "livetranslate.error.noApiKey".localized
             showError = true

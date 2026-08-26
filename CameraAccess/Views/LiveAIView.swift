@@ -220,6 +220,21 @@ struct LiveAIView: View {
 
     private var controlsView: some View {
         VStack(spacing: AppSpacing.md) {
+            if viewModel.responseState != .idle {
+                HStack(spacing: AppSpacing.sm) {
+                    Circle()
+                        .fill(viewModel.responseState == .failed ? Color.red : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(viewModel.responseState.displayName)
+                        .font(AppTypography.caption)
+                        .foregroundColor(.white)
+                }
+                .padding(.horizontal, AppSpacing.md)
+                .padding(.vertical, AppSpacing.sm)
+                .background(Color.black.opacity(0.6))
+                .cornerRadius(AppCornerRadius.xl)
+            }
+
             // Recording status
             HStack(spacing: AppSpacing.sm) {
                 if viewModel.isRecording {

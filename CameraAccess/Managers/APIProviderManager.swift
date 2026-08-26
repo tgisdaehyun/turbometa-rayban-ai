@@ -26,11 +26,41 @@ enum AlibabaEndpoint: String, CaseIterable, Codable {
         }
     }
 
-    var websocketURL: String {
+    /// Returns the realtime endpoint. New Qwen3.5 realtime endpoints are
+    /// workspace-scoped; the legacy endpoint is kept as a compatibility
+    /// fallback for non-realtime clients that still use this enum directly.
+    func websocketURL(workspaceID: String? = nil) -> String {
+        if let workspaceID, Self.isValidWorkspaceID(workspaceID) {
+            let host: String
+            switch self {
+            case .beijing:
+                host = "\(workspaceID).cn-beijing.maas.aliyuncs.com"
+            case .singapore:
+                host = "\(workspaceID).ap-southeast-1.maas.aliyuncs.com"
+            }
+            return "wss://\(host)/api-ws/v1/realtime"
+        }
+
         switch self {
         case .beijing: return "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
         case .singapore: return "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime"
         }
+    }
+
+    /// Bailian workspace IDs are opaque identifiers. Restrict the value to
+    /// URL-safe characters before interpolating it into a WebSocket host.
+    static func isValidWorkspaceID(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The workspace ID becomes a single DNS label in the realtime host.
+        // RFC host labels are limited to 63 characters.
+        guard (3...63).contains(trimmed.count) else { return false }
+        guard !trimmed.hasPrefix("-"), !trimmed.hasSuffix("-") else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+        return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    var websocketURL: String {
+        websocketURL(workspaceID: nil)
     }
 }
 
@@ -92,8 +122,8 @@ enum LiveAIProvider: String, CaseIterable, Codable {
 
     var defaultModel: String {
         switch self {
-        case .alibaba: return "qwen3-omni-flash-realtime"
-        case .google: return "gemini-2.0-flash-exp"
+        case .alibaba: return "qwen3.5-omni-flash-realtime"
+        case .google: return "gemini-3.1-flash-live-preview"
         }
     }
 
@@ -104,9 +134,12 @@ enum LiveAIProvider: String, CaseIterable, Codable {
         }
     }
 
-    func websocketURL(endpoint: AlibabaEndpoint = .beijing) -> String {
+    func websocketURL(
+        endpoint: AlibabaEndpoint = .beijing,
+        workspaceID: String? = nil
+    ) -> String {
         switch self {
-        case .alibaba: return endpoint.websocketURL
+        case .alibaba: return endpoint.websocketURL(workspaceID: workspaceID)
         case .google: return "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         }
     }
@@ -189,6 +222,7 @@ class APIProviderManager: ObservableObject {
     // Live AI Provider
     private let liveAIProviderKey = "liveai_provider"
     private let liveAIModelKey = "liveai_model"
+    private let alibabaWorkspaceIDKey = "alibaba_workspace_id"
 
     @Published var currentProvider: APIProvider {
         didSet {
@@ -210,6 +244,20 @@ class APIProviderManager: ObservableObject {
     @Published var alibabaEndpoint: AlibabaEndpoint {
         didSet {
             UserDefaults.standard.set(alibabaEndpoint.rawValue, forKey: alibabaEndpointKey)
+        }
+    }
+
+    /// Bailian workspace ID used by workspace-scoped Qwen realtime endpoints.
+    /// It is intentionally kept separate from the API key because a key can
+    /// be shared by several workspaces/regions.
+    @Published var alibabaWorkspaceID: String {
+        didSet {
+            let trimmed = alibabaWorkspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed != alibabaWorkspaceID {
+                alibabaWorkspaceID = trimmed
+                return
+            }
+            UserDefaults.standard.set(trimmed, forKey: alibabaWorkspaceIDKey)
         }
     }
 
@@ -237,6 +285,7 @@ class APIProviderManager: ObservableObject {
         // Alibaba Endpoint
         let savedEndpoint = UserDefaults.standard.string(forKey: alibabaEndpointKey) ?? "beijing"
         self.alibabaEndpoint = AlibabaEndpoint(rawValue: savedEndpoint) ?? .beijing
+        self.alibabaWorkspaceID = UserDefaults.standard.string(forKey: alibabaWorkspaceIDKey) ?? ""
 
         // Vision API Provider
         let savedProvider = UserDefaults.standard.string(forKey: providerKey) ?? "alibaba"
@@ -252,13 +301,37 @@ class APIProviderManager: ObservableObject {
         self.liveAIProvider = liveProvider
 
         let savedLiveAIModel = UserDefaults.standard.string(forKey: liveAIModelKey)
-        self.liveAIModel = savedLiveAIModel ?? liveProvider.defaultModel
+        let legacyModels = [
+            "qwen3-omni-flash-realtime",
+            "gemini-2.0-flash-exp",
+            "gemini-2.5-flash-native-audio-preview-12-2025"
+        ]
+        if let savedLiveAIModel, !legacyModels.contains(savedLiveAIModel) {
+            self.liveAIModel = savedLiveAIModel
+        } else {
+            self.liveAIModel = liveProvider.defaultModel
+            UserDefaults.standard.set(liveProvider.defaultModel, forKey: liveAIModelKey)
+        }
     }
 
     // MARK: - Live AI Configuration
 
     var liveAIWebSocketURL: String {
-        return liveAIProvider.websocketURL(endpoint: alibabaEndpoint)
+        guard liveAIProvider == .google || AlibabaEndpoint.isValidWorkspaceID(alibabaWorkspaceID) else {
+            return ""
+        }
+        return liveAIProvider.websocketURL(endpoint: alibabaEndpoint, workspaceID: alibabaWorkspaceID)
+    }
+
+    var hasValidAlibabaWorkspaceID: Bool {
+        AlibabaEndpoint.isValidWorkspaceID(alibabaWorkspaceID)
+    }
+
+    var liveAIConfigurationError: String? {
+        if liveAIProvider == .alibaba && !hasValidAlibabaWorkspaceID {
+            return "liveai.error.alibaba.workspace".localized
+        }
+        return nil
     }
 
     var liveAIAPIKey: String {
@@ -381,10 +454,24 @@ extension APIProviderManager {
     nonisolated static var staticLiveAIAPIKey: String {
         switch staticLiveAIProvider {
         case .alibaba:
-            return APIKeyManager.shared.getAPIKey(for: .alibaba, endpoint: staticAlibabaEndpoint) ?? ""
+            return staticAlibabaAPIKey
         case .google:
             return APIKeyManager.shared.getGoogleAPIKey() ?? ""
         }
+    }
+
+    /// Live Translate is an Alibaba-only product flow. It must not inherit the
+    /// provider selected for general Live AI chat (for example Gemini), or it
+    /// would send a Qwen translation session to the wrong endpoint/key.
+    nonisolated static var staticAlibabaAPIKey: String {
+        APIKeyManager.shared.getAPIKey(for: .alibaba, endpoint: staticAlibabaEndpoint) ?? ""
+    }
+
+    /// Preserve the endpoint used by Live Translate before workspace-scoped
+    /// Qwen web search was added. Live AI chat owns the new workspace endpoint;
+    /// translation remains isolated from that configuration.
+    nonisolated static var staticLiveTranslateWebsocketURL: String {
+        staticAlibabaEndpoint.websocketURL
     }
 
     nonisolated static var staticCurrentModel: String {
@@ -403,7 +490,29 @@ extension APIProviderManager {
         return APIKeyManager.shared.getAPIKey(for: staticCurrentProvider) ?? ""
     }
 
+    nonisolated static var staticAlibabaWorkspaceID: String {
+        UserDefaults.standard.string(forKey: "alibaba_workspace_id") ?? ""
+    }
+
+    nonisolated static var staticLiveAIModel: String {
+        let provider = staticLiveAIProvider
+        let savedModel = UserDefaults.standard.string(forKey: "liveai_model")
+        let legacyModels = [
+            "qwen3-omni-flash-realtime",
+            "gemini-2.0-flash-exp",
+            "gemini-2.5-flash-native-audio-preview-12-2025"
+        ]
+        return savedModel.flatMap { legacyModels.contains($0) ? nil : $0 } ?? provider.defaultModel
+    }
+
     nonisolated static var staticLiveAIWebsocketURL: String {
-        return staticLiveAIProvider.websocketURL(endpoint: staticAlibabaEndpoint)
+        let provider = staticLiveAIProvider
+        guard provider == .google || AlibabaEndpoint.isValidWorkspaceID(staticAlibabaWorkspaceID) else {
+            return ""
+        }
+        return provider.websocketURL(
+            endpoint: staticAlibabaEndpoint,
+            workspaceID: staticAlibabaWorkspaceID
+        )
     }
 }

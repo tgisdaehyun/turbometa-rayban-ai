@@ -16,6 +16,7 @@ class LiveAIManager: ObservableObject {
     @Published var isRunning = false
     @Published var isConnected = false
     @Published var errorMessage: String?
+    @Published private(set) var responseState: LiveAIResponseState = .idle
     @Published private(set) var inputMode: LiveAIInputMode = .voice
     @Published private(set) var sentImageCount = 0
     @Published private(set) var isSwitchingInputMode = false
@@ -25,6 +26,7 @@ class LiveAIManager: ObservableObject {
     private var omniService: OmniRealtimeService?
     private var geminiService: GeminiLiveService?
     private var provider: LiveAIProvider = .alibaba
+    private var sessionModel = LiveAIProvider.alibaba.defaultModel
 
     // 视频帧
     private var currentVideoFrame: UIImage?
@@ -38,6 +40,7 @@ class LiveAIManager: ObservableObject {
 
     // TTS
     private let tts = TTSService.shared
+    private var lastSpokenErrorAt: Date?
 
     private init() {
         // 监听 Intent 触发
@@ -73,7 +76,15 @@ class LiveAIManager: ObservableObject {
         let apiKey = APIProviderManager.staticLiveAIAPIKey
         guard !apiKey.isEmpty else {
             errorMessage = "请先在设置中配置 API Key"
-            tts.speak("请先在设置中配置 API Key")
+            responseState = .failed
+            speakError("请先在设置中配置 API Key")
+            return
+        }
+
+        if let configurationError = APIProviderManager.shared.liveAIConfigurationError {
+            errorMessage = configurationError
+            responseState = .failed
+            speakError(configurationError)
             return
         }
 
@@ -81,6 +92,7 @@ class LiveAIManager: ObservableObject {
         errorMessage = nil
         conversationHistory = []
         inputMode = .voice
+        responseState = .idle
         initialInputMode = .voice
         sentImageCount = 0
         hasSentFirstAudio = false
@@ -89,6 +101,7 @@ class LiveAIManager: ObservableObject {
 
         // 获取当前 provider
         provider = APIProviderManager.staticLiveAIProvider
+        sessionModel = APIProviderManager.staticLiveAIModel
 
         print("🚀 [LiveAIManager] Starting Live AI session...")
 
@@ -128,10 +141,14 @@ class LiveAIManager: ObservableObject {
 
         } catch let error as LiveAIError {
             errorMessage = error.localizedDescription
+            responseState = .failed
+            speakError(error.localizedDescription)
             print("❌ [LiveAIManager] LiveAIError: \(error)")
             await stopSession()
         } catch {
             errorMessage = error.localizedDescription
+            responseState = .failed
+            speakError(error.localizedDescription)
             print("❌ [LiveAIManager] Error: \(error)")
             await stopSession()
         }
@@ -166,10 +183,10 @@ class LiveAIManager: ObservableObject {
     private func initializeService(apiKey: String) {
         switch provider {
         case .alibaba:
-            omniService = OmniRealtimeService(apiKey: apiKey)
+            omniService = OmniRealtimeService(apiKey: apiKey, model: sessionModel)
             setupOmniCallbacks()
         case .google:
-            geminiService = GeminiLiveService(apiKey: apiKey)
+            geminiService = GeminiLiveService(apiKey: apiKey, model: sessionModel)
             setupGeminiCallbacks()
         }
     }
@@ -181,6 +198,12 @@ class LiveAIManager: ObservableObject {
             Task { @MainActor in
                 self?.isConnected = true
                 print("✅ [LiveAIManager] Omni connected")
+            }
+        }
+
+        omniService.onResponseState = { [weak self] state in
+            Task { @MainActor in
+                self?.responseState = state
             }
         }
 
@@ -227,7 +250,7 @@ class LiveAIManager: ObservableObject {
 
         omniService.onError = { [weak self] error in
             Task { @MainActor in
-                self?.errorMessage = error
+                self?.handleServiceError(error)
                 print("❌ [LiveAIManager] Omni error: \(error)")
             }
         }
@@ -240,6 +263,12 @@ class LiveAIManager: ObservableObject {
             Task { @MainActor in
                 self?.isConnected = true
                 print("✅ [LiveAIManager] Gemini connected")
+            }
+        }
+
+        geminiService.onResponseState = { [weak self] state in
+            Task { @MainActor in
+                self?.responseState = state
             }
         }
 
@@ -286,7 +315,7 @@ class LiveAIManager: ObservableObject {
 
         geminiService.onError = { [weak self] error in
             Task { @MainActor in
-                self?.errorMessage = error
+                self?.handleServiceError(error)
                 print("❌ [LiveAIManager] Gemini error: \(error)")
             }
         }
@@ -359,7 +388,8 @@ class LiveAIManager: ObservableObject {
         frameUpdateTimer?.invalidate()
         frameUpdateTimer = nil
         errorMessage = message
-        tts.speak(message)
+        responseState = .failed
+        speakError(message)
     }
 
     private func handleVisionStreamFailure() {
@@ -370,7 +400,8 @@ class LiveAIManager: ObservableObject {
         frameUpdateTimer?.invalidate()
         frameUpdateTimer = nil
         errorMessage = "视觉流已断开，已切回纯语音"
-        tts.speak(errorMessage ?? "视觉流已断开，已切回纯语音")
+        responseState = .failed
+        speakError(errorMessage ?? "视觉流已断开，已切回纯语音")
     }
 
     // MARK: - Connection
@@ -460,6 +491,7 @@ class LiveAIManager: ObservableObject {
         geminiService = nil
         isConnected = false
         isRunning = false
+        responseState = .idle
         inputMode = .voice
         hasSentFirstAudio = false
         isImageSendingEnabled = false
@@ -475,17 +507,9 @@ class LiveAIManager: ObservableObject {
             return
         }
 
-        let aiModel: String
-        switch provider {
-        case .alibaba:
-            aiModel = "qwen3-omni-flash-realtime"
-        case .google:
-            aiModel = "gemini-2.0-flash-exp"
-        }
-
         let record = ConversationRecord(
             messages: conversationHistory,
-            aiModel: aiModel,
+            aiModel: sessionModel,
             language: "zh-CN",
             initialInputMode: initialInputMode,
             visionFrameCount: sentImageCount
@@ -511,6 +535,27 @@ class LiveAIManager: ObservableObject {
         Task { @MainActor in
             await stopSession()
         }
+    }
+
+    /// Stop microphone capture before speaking an error so the phone/eyeglass
+    /// output cannot be fed back into the realtime model. Successful model
+    /// responses never pass through this path: they use native provider audio.
+    private func handleServiceError(_ message: String) {
+        stopRecording()
+        responseState = .failed
+        errorMessage = message
+        speakError(message)
+    }
+
+    private func speakError(_ message: String) {
+        let now = Date()
+        if let lastSpokenErrorAt,
+           now.timeIntervalSince(lastSpokenErrorAt) < 3 {
+            return
+        }
+        lastSpokenErrorAt = now
+        tts.prepareAudioSession(mode: .automatic)
+        tts.speak(LiveAIErrorMessage.speech(for: message), mode: .automatic)
     }
 }
 

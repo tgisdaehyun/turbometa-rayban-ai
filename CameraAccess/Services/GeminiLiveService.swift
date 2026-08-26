@@ -1,7 +1,7 @@
 /*
  * Gemini Live WebSocket Service
  * Provides real-time audio chat with Google Gemini AI
- * Uses gemini-2.0-flash-exp model for real-time audio conversation
+ * Uses Gemini 3.1 Flash Live with Google Search for real-time audio conversation
  */
 
 import Foundation
@@ -11,6 +11,57 @@ import AVFoundation
 // MARK: - Gemini Live Service
 
 class GeminiLiveService: NSObject {
+
+    static func realtimeAudioInput(_ base64Audio: String) -> [String: Any] {
+        [
+            "realtimeInput": [
+                "audio": [
+                    "data": base64Audio,
+                    "mimeType": "audio/pcm;rate=16000"
+                ]
+            ]
+        ]
+    }
+
+    static func realtimeVideoInput(_ base64Image: String) -> [String: Any] {
+        [
+            "realtimeInput": [
+                "video": [
+                    "data": base64Image,
+                    "mimeType": "image/jpeg"
+                ]
+            ]
+        ]
+    }
+
+    /// Pure setup builder for protocol tests. The native audio response and
+    /// output transcription are intentionally configured together so search
+    /// answers can be spoken and also persisted as text.
+    static func setupFields(model: String, instructions: String) -> [String: Any] {
+        [
+            "model": "models/\(model)",
+            "generationConfig": [
+                "responseModalities": ["AUDIO"],
+                "speechConfig": [
+                    "voiceConfig": [
+                        "prebuiltVoiceConfig": [
+                            "voiceName": "Aoede"
+                        ]
+                    ]
+                ]
+            ],
+            "inputAudioTranscription": [String: Any](),
+            "outputAudioTranscription": [String: Any](),
+            "systemInstruction": [
+                "parts": [
+                    ["text": instructions]
+                ]
+            ],
+            "tools": [
+                ["googleSearch": [String: Any]()]
+            ]
+        ]
+    }
 
     // WebSocket
     private var webSocket: URLSessionWebSocketTask?
@@ -49,6 +100,7 @@ class GeminiLiveService: NSObject {
     var onError: ((String) -> Void)?
     var onConnected: (() -> Void)?
     var onFirstAudioSent: (() -> Void)?
+    var onResponseState: ((LiveAIResponseState) -> Void)?
 
     // State
     private var isRecording = false
@@ -59,7 +111,7 @@ class GeminiLiveService: NSObject {
 
     init(apiKey: String, model: String? = nil) {
         self.apiKey = apiKey
-        self.model = model ?? "gemini-2.0-flash-exp"
+        self.model = model ?? APIProviderManager.staticLiveAIModel
         super.init()
         setupAudioEngine()
         observeAudioRouteChanges()
@@ -241,26 +293,14 @@ class GeminiLiveService: NSObject {
         // switch, so Gemini does not need a second setup message.
         let instructions = LiveAIModeManager.staticSystemPrompt(inputMode: .voice)
 
-        // Gemini Live API setup message
+        // Gemini Live API setup message. The WebSocket API uses camelCase
+        // field names; output transcription keeps the UI/history in sync
+        // while the model still returns native audio.
         let setupMessage: [String: Any] = [
-            "setup": [
-                "model": "models/\(model)",
-                "generation_config": [
-                    "response_modalities": ["AUDIO"],
-                    "speech_config": [
-                        "voice_config": [
-                            "prebuilt_voice_config": [
-                                "voice_name": "Aoede"  // Gemini voice options: Aoede, Charon, Fenrir, Kore, Puck
-                            ]
-                        ]
-                    ]
-                ],
-                "system_instruction": [
-                    "parts": [
-                        ["text": instructions]
-                    ]
-                ]
-            ]
+            "setup": Self.setupFields(
+                model: model,
+                instructions: instructions + LiveAIWebSearchPolicy.instructions
+            )
         ]
 
         sendJSON(setupMessage)
@@ -417,18 +457,8 @@ class GeminiLiveService: NSObject {
     }
 
     private func sendRealtimeInput(audioData: String) {
-        // Gemini Live realtime input format
-        let message: [String: Any] = [
-            "realtime_input": [
-                "media_chunks": [
-                    [
-                        "mime_type": "audio/pcm;rate=16000",
-                        "data": audioData
-                    ]
-                ]
-            ]
-        ]
-        sendJSON(message)
+        // `mediaChunks` is deprecated by the current Live WebSocket API.
+        sendJSON(Self.realtimeAudioInput(audioData))
     }
 
     func sendImageInput(_ image: UIImage) {
@@ -440,17 +470,7 @@ class GeminiLiveService: NSObject {
 
         print("📸 [Gemini] 发送图片: \(imageData.count) bytes")
 
-        let message: [String: Any] = [
-            "realtime_input": [
-                "media_chunks": [
-                    [
-                        "mime_type": "image/jpeg",
-                        "data": base64Image
-                    ]
-                ]
-            ]
-        ]
-        sendJSON(message)
+        sendJSON(Self.realtimeVideoInput(base64Image))
     }
 
     // MARK: - Receive Messages
@@ -495,6 +515,7 @@ class GeminiLiveService: NSObject {
             if json["setupComplete"] != nil {
                 print("✅ [Gemini] 会话配置完成")
                 self.isSessionConfigured = true
+                self.onResponseState?(.idle)
                 self.onConnected?()
                 return
             }
@@ -515,6 +536,7 @@ class GeminiLiveService: NSObject {
             if let error = json["error"] as? [String: Any] {
                 let message = error["message"] as? String ?? "Unknown error"
                 print("❌ [Gemini] 服务器错误: \(message)")
+                self.onResponseState?(.failed)
                 self.onError?(message)
                 return
             }
@@ -540,6 +562,7 @@ class GeminiLiveService: NSObject {
                    let base64Audio = inlineData["data"] as? String,
                    let audioData = Data(base64Encoded: base64Audio) {
 
+                    onResponseState?(.playing)
                     onAudioDelta?(audioData)
                     handleAudioChunk(audioData)
                 }
@@ -550,6 +573,7 @@ class GeminiLiveService: NSObject {
         if let turnComplete = content["turnComplete"] as? Bool, turnComplete {
             print("✅ [Gemini] AI回复完成")
             finishAudioPlayback()
+            onResponseState?(.idle)
             onTranscriptDone?("")
         }
 
@@ -564,6 +588,7 @@ class GeminiLiveService: NSObject {
         if let inputTranscription = content["inputTranscription"] as? [String: Any],
            let text = inputTranscription["text"] as? String {
             print("👤 [Gemini] 用户说: \(text)")
+            onResponseState?(.waiting)
             onUserTranscript?(text)
         }
 
