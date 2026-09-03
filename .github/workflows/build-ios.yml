@@ -28,11 +28,19 @@ jobs:
         run: |
           xcodebuild -resolvePackageDependencies \
                      -project CameraAccess.xcodeproj \
-                     -scheme TurboMeta
+                     -scheme TurboMeta \
+                     -derivedDataPath build
+
+      - name: Patch HaishinKit for iOS VideoToolbox
+        run: |
+          echo "Patching VTSessionOptionKey.swift..."
+          find build -name "VTSessionOptionKey.swift" -exec sed -i '' 's/kVTCompressionPropertyKey_VariableBitRate as String/"VariableBitRate"/' {} + || true
+          find /Users/runner -name "VTSessionOptionKey.swift" -exec sed -i '' 's/kVTCompressionPropertyKey_VariableBitRate as String/"VariableBitRate"/' {} + 2>/dev/null || true
+          grep "variableBitRate" $(find build -name "VTSessionOptionKey.swift" | head -n 1) || true
 
       - name: Build TurboMeta iOS App
         run: |
-          xcodebuild clean build \
+          xcodebuild build \
                      -project CameraAccess.xcodeproj \
                      -scheme TurboMeta \
                      -configuration Release \
@@ -66,7 +74,7 @@ jobs:
 
       - name: Create GitHub Release with IPA
         uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         with:
           tag_name: v2.0.0-build-${{ github.run_number }}
           name: TurboMeta iOS IPA Build #${{ github.run_number }}
