@@ -442,7 +442,11 @@ class GeminiLiveService: NSObject {
 
         sendRealtimeInput(audioData: base64Audio)
 
-        if frameLength > 0 {
+        // While the model's reply is playing, whatever the microphone picks
+        // up is mostly our own speaker; do not let it count as user speech.
+        if isCollectingAudio || (playerNode?.isPlaying ?? false) {
+            speechDetector.reset()
+        } else if frameLength > 0 {
             let rms = (sumOfSquares / Float(frameLength)).squareRoot()
             let duration = Double(frameLength) / recordTargetFormat.sampleRate
             if let event = speechDetector.process(rms: rms, duration: duration) {
@@ -492,7 +496,7 @@ class GeminiLiveService: NSObject {
     }
 
     func sendImageInput(_ image: UIImage) {
-        guard let imageData = image.jpegData(compressionQuality: 0.6) else {
+        guard let imageData = Self.downscaledForModel(image).jpegData(compressionQuality: 0.5) else {
             print("❌ [Gemini] 无法压缩图片")
             return
         }
@@ -501,6 +505,40 @@ class GeminiLiveService: NSObject {
         print("📸 [Gemini] 发送图片: \(imageData.count) bytes")
 
         sendJSON(Self.realtimeVideoInput(base64Image))
+    }
+
+    private func respondToUnsupportedToolCall(_ toolCall: [String: Any]) {
+        guard let calls = toolCall["functionCalls"] as? [[String: Any]], !calls.isEmpty else { return }
+        let responses: [[String: Any]] = calls.compactMap { call in
+            guard let name = call["name"] as? String else { return nil }
+            var response: [String: Any] = [
+                "name": name,
+                "response": ["error": "Function \(name) is not available in this app. Answer from what you already know."]
+            ]
+            if let id = call["id"] as? String {
+                response["id"] = id
+            }
+            return response
+        }
+        guard !responses.isEmpty else { return }
+        sendJSON(["toolResponse": ["functionResponses": responses]])
+    }
+
+    /// Longest side of frames sent to the model. Glasses frames are
+    /// 720x1280; sending them at full size makes each websocket message
+    /// several hundred KB of base64 for no benefit to the model.
+    private static let maxFrameDimension: CGFloat = 1024
+
+    private static func downscaledForModel(_ image: UIImage) -> UIImage {
+        let longest = max(image.size.width, image.size.height)
+        guard longest > maxFrameDimension, longest > 0 else { return image }
+        let scale = maxFrameDimension / longest
+        let target = CGSize(width: (image.size.width * scale).rounded(), height: (image.size.height * scale).rounded())
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
     }
 
     // MARK: - Receive Messages
@@ -556,9 +594,23 @@ class GeminiLiveService: NSObject {
                 return
             }
 
-            // Handle tool calls (if any)
+            // Handle tool calls. Google Search runs server-side, so the app
+            // declares no client functions; but if the model ever asks for
+            // one it blocks the turn until it gets a toolResponse, so answer
+            // every call instead of dropping it.
             if let toolCall = json["toolCall"] as? [String: Any] {
                 print("🔧 [Gemini] Tool call: \(toolCall)")
+                self.respondToUnsupportedToolCall(toolCall)
+                return
+            }
+
+            if json["toolCallCancellation"] != nil {
+                print("🔧 [Gemini] Tool call cancelled")
+                return
+            }
+
+            if let goAway = json["goAway"] as? [String: Any] {
+                print("⚠️ [Gemini] 服务器即将断开: \(goAway)")
                 return
             }
 

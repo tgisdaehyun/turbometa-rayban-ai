@@ -235,7 +235,7 @@ class LiveAIManager: ObservableObject {
         omniService.onResponseState = { [weak self] state in
             Task { @MainActor in
                 guard let self, self.sessionGeneration == generation else { return }
-                self.responseState = state
+                self.applyResponseState(state)
             }
         }
 
@@ -326,7 +326,7 @@ class LiveAIManager: ObservableObject {
         geminiService.onResponseState = { [weak self] state in
             Task { @MainActor in
                 guard let self, self.sessionGeneration == generation else { return }
-                self.responseState = state
+                self.applyResponseState(state)
             }
         }
 
@@ -572,6 +572,8 @@ class LiveAIManager: ObservableObject {
         // 停止定时器
         frameUpdateTimer?.invalidate()
         frameUpdateTimer = nil
+        waitingWatchdog?.cancel()
+        waitingWatchdog = nil
 
         // 停止录音
         stopRecording()
@@ -647,6 +649,30 @@ class LiveAIManager: ObservableObject {
     /// Stop microphone capture before speaking an error so the phone/eyeglass
     /// output cannot be fed back into the realtime model. Successful model
     /// responses never pass through this path: they use native provider audio.
+    /// A turn that stays in `.waiting` (user transcribed, nothing back from
+    /// the model) this long is released so the UI is not stuck on
+    /// "Getting the latest information..." forever.
+    private let waitingTimeout: TimeInterval = 30
+    private var waitingWatchdog: Task<Void, Never>?
+
+    private func applyResponseState(_ state: LiveAIResponseState) {
+        responseState = state
+        waitingWatchdog?.cancel()
+        waitingWatchdog = nil
+        guard state == .waiting else { return }
+        let generation = sessionGeneration
+        let timeout = waitingTimeout
+        waitingWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard let self, !Task.isCancelled,
+                  self.sessionGeneration == generation,
+                  self.responseState == .waiting else { return }
+            print("⏱️ [LiveAIManager] 模型 \(Int(timeout)) 秒无响应，释放等待状态")
+            self.errorMessage = "AI 没有响应，请再说一次 / No reply from the model, please try again"
+            self.responseState = .idle
+        }
+    }
+
     private func handleServiceError(_ message: String) {
         // 先停录音防回声，再走致命错误的全量清理
         stopRecording()
