@@ -15,14 +15,28 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.4 / 16.3 (Swift 6.2)
+      # Meta DAT SDK 0.5.0 ships binary xcframeworks whose swiftinterface was
+      # emitted by Swift 6.2.3 (Xcode 26.2+). Compiling the app with an older
+      # toolchain (Xcode 16.x = Swift 6.1) still links, but the app and the
+      # framework disagree on the ABI of the resilient async/typed-throws
+      # protocol methods, and the first call into the SDK
+      # (Wearables.shared.startRegistration()) jumps to a garbage address
+      # (EXC_BAD_ACCESS / SIGBUS on device). Always build with Swift >= 6.2.
+      - name: Select Xcode 26 (Swift 6.2)
         run: |
-          if [ -d "/Applications/Xcode_16.4.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.4.app
-          elif [ -d "/Applications/Xcode_16.3.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.3.app
-          fi
+          for candidate in Xcode_26.3 Xcode_26.2 Xcode_26.1.1 Xcode_26.0.1; do
+            if [ -d "/Applications/${candidate}.app" ]; then
+              sudo xcode-select -s "/Applications/${candidate}.app"
+              break
+            fi
+          done
           xcodebuild -version
+          swift --version
+          SWIFT_VER=$(swift --version 2>&1 | sed -n 's/.*Swift version \([0-9]*\.[0-9]*\).*/\1/p' | head -n 1)
+          if [ "$(printf '%s\n6.2\n' "$SWIFT_VER" | sort -V | head -n 1)" != "6.2" ]; then
+            echo "::error::Swift $SWIFT_VER is too old for Meta DAT SDK 0.5.0 (needs Swift 6.2+, Xcode 26). The build would crash at runtime."
+            exit 1
+          fi
 
       - name: Configure Git URL Overrides for SPM
         run: |
