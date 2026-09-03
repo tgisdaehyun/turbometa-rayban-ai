@@ -105,6 +105,11 @@ class GeminiLiveService: NSObject {
     // State
     private var isRecording = false
     private var hasAudioBeenSent = false
+    /// Local voice activity detection. Gemini Live sends no speech-start
+    /// event, and LiveAIManager only forwards a glasses frame from the
+    /// `onSpeechStarted` callback, so without this the Google provider never
+    /// sends any video.
+    private var speechDetector = SpeechActivityDetector()
     private var isSessionConfigured = false
     private var ownsAudioSession = false
     private var routeChangeObserver: NSObjectProtocol?
@@ -386,6 +391,12 @@ class GeminiLiveService: NSObject {
         audioEngine?.stop()
         isRecording = false
         hasAudioBeenSent = false
+        if speechDetector.isSpeaking {
+            DispatchQueue.main.async { [weak self] in
+                self?.onSpeechStopped?()
+            }
+        }
+        speechDetector.reset()
     }
 
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer, inputFormat: AVAudioFormat) {
@@ -418,16 +429,35 @@ class GeminiLiveService: NSObject {
         let channel = floatChannelData.pointee
 
         var int16Data = [Int16](repeating: 0, count: frameLength)
+        var sumOfSquares: Float = 0
         for i in 0..<frameLength {
             let sample = channel[i]
             let clampedSample = max(-1.0, min(1.0, sample))
             int16Data[i] = Int16(clampedSample * 32767.0)
+            sumOfSquares += clampedSample * clampedSample
         }
 
         let data = Data(bytes: int16Data, count: frameLength * MemoryLayout<Int16>.size)
         let base64Audio = data.base64EncodedString()
 
         sendRealtimeInput(audioData: base64Audio)
+
+        if frameLength > 0 {
+            let rms = (sumOfSquares / Float(frameLength)).squareRoot()
+            let duration = Double(frameLength) / recordTargetFormat.sampleRate
+            if let event = speechDetector.process(rms: rms, duration: duration) {
+                DispatchQueue.main.async { [weak self] in
+                    switch event {
+                    case .started:
+                        print("🎤 [Gemini] 检测到语音开始")
+                        self?.onSpeechStarted?()
+                    case .stopped:
+                        print("🛑 [Gemini] 检测到语音停止")
+                        self?.onSpeechStopped?()
+                    }
+                }
+            }
+        }
 
         if !hasAudioBeenSent {
             hasAudioBeenSent = true
