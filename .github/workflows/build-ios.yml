@@ -20,6 +20,10 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_16.2.app
           xcodebuild -version
 
+      - name: Configure Git URL Overrides for SPM
+        run: |
+          git config --global url."https://github.com/tgisdaehyun/Logboard.git".insteadOf "https://github.com/shogo4405/Logboard.git"
+
       - name: Resolve Swift Package Dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
