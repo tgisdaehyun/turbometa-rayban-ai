@@ -1,0 +1,75 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Inspect Available Xcode Versions
+        run: |
+          ls -d /Applications/Xcode* || true
+          xcodebuild -version
+
+      - name: Resolve Swift Package Dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+                     -project CameraAccess.xcodeproj \
+                     -scheme TurboMeta
+
+      - name: Build TurboMeta iOS App
+        run: |
+          xcodebuild clean build \
+                     -project CameraAccess.xcodeproj \
+                     -scheme TurboMeta \
+                     -configuration Release \
+                     -destination 'generic/platform=iOS' \
+                     -derivedDataPath build \
+                     CODE_SIGN_IDENTITY="" \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGNING_ALLOWED=NO \
+                     AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      - name: Package App into IPA
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -name "*.app" -maxdepth 1 | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: No .app bundle found!"
+            find build -name "*.app"
+            exit 1
+          fi
+          echo "Found app bundle: $APP_PATH"
+          cp -r "$APP_PATH" Payload/
+          zip -r TurboMeta.ipa Payload
+          ls -lh TurboMeta.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TurboMeta-iOS-IPA
+          path: TurboMeta.ipa
+          retention-days: 14
+
+      - name: Create GitHub Release with IPA
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: v2.0.0-build-${{ github.run_number }}
+          name: TurboMeta iOS IPA Build #${{ github.run_number }}
+          body: |
+            Automated iOS IPA build for TurboMeta (Ray-Ban Meta AI Assistant).
+            Built with GitHub Actions macOS runner.
+            Install via Sideloadly or SideStore on iOS 17+.
+          files: TurboMeta.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
