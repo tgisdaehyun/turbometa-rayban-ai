@@ -65,6 +65,26 @@ struct VisionRootView: View {
         StreamSessionView(wearables: nil, wearablesVM: nil)
       }
     }
+    // Meta AI redirects back here (cameraaccess://...?metaWearablesAction=...)
+    // to complete glasses registration. Handle the callback at the ROOT so it
+    // fires no matter which screen is mounted; a handler that only lives in a
+    // child view is dropped when that view is not on screen, and connecting
+    // then loops back to Meta AI forever.
+    .onOpenURL { url in
+      NSLog("[CameraAccess] onOpenURL: \(url.absoluteString)")
+      guard wearables != nil,
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+        components.queryItems?.contains(where: { $0.name == "metaWearablesAction" }) == true
+      else { return }
+      Task {
+        do {
+          _ = try await Wearables.shared.handleUrl(url)
+          NSLog("[CameraAccess] handleUrl completed")
+        } catch {
+          NSLog("[CameraAccess] handleUrl failed: \(error.localizedDescription)")
+        }
+      }
+    }
     .sheet(isPresented: $showSettings) { SettingsView() }
   }
 }
@@ -103,7 +123,7 @@ private struct GlassesCapableRootView: View {
       }
       #endif
 
-    // Registration view handles the flow for connecting to the glasses via Meta AI
-    RegistrationView(viewModel: viewModel)
+    // The Meta AI registration callback is handled at the app root
+    // (see VisionRootView.onOpenURL) so it is never dropped.
   }
 }
