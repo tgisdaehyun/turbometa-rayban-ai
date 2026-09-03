@@ -496,7 +496,7 @@ class GeminiLiveService: NSObject {
     }
 
     func sendImageInput(_ image: UIImage) {
-        guard let imageData = Self.downscaledForModel(image).jpegData(compressionQuality: 0.5) else {
+        guard let imageData = Self.downscaledForModel(image).jpegData(compressionQuality: Self.frameJPEGQuality) else {
             print("❌ [Gemini] 无法压缩图片")
             return
         }
@@ -524,10 +524,13 @@ class GeminiLiveService: NSObject {
         sendJSON(["toolResponse": ["functionResponses": responses]])
     }
 
-    /// Longest side of frames sent to the model. Glasses frames are
-    /// 720x1280; sending them at full size makes each websocket message
-    /// several hundred KB of base64 for no benefit to the model.
-    private static let maxFrameDimension: CGFloat = 1024
+    /// Longest side of frames sent to the model. The glasses stream at most
+    /// 720x1280 (StreamingResolution.high), which passes through untouched;
+    /// the cap only guards against unexpectedly large sources.
+    private static let maxFrameDimension: CGFloat = 1280
+    /// One frame goes out per utterance, so spend bytes on detail: reading
+    /// and museum modes depend on small text staying legible.
+    private static let frameJPEGQuality: CGFloat = 0.8
 
     private static func downscaledForModel(_ image: UIImage) -> UIImage {
         let longest = max(image.size.width, image.size.height)
