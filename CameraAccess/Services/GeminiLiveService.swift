@@ -1,7 +1,9 @@
 /*
  * Gemini Live WebSocket Service
  * Provides real-time audio chat with Google Gemini AI
- * Uses gemini-2.0-flash-exp model for real-time audio conversation
+ * Uses the gemini-2.5-flash-native-audio-preview-12-2025 model for real-time audio conversation
+ * (the Gemini 2.0 Live models were shut down by Google on 2025-12-09; the server closes the
+ * WebSocket with code 1008 when the setup message names a retired model).
  */
 
 import Foundation
@@ -57,7 +59,10 @@ class GeminiLiveService: NSObject {
 
     init(apiKey: String, model: String? = nil) {
         self.apiKey = apiKey
-        self.model = model ?? "gemini-2.0-flash-exp"
+        // Current Live API models (ai.google.dev/gemini-api/docs/models):
+        //   gemini-2.5-flash-native-audio-preview-12-2025  (production)
+        //   gemini-3.1-flash-live-preview                   (preview)
+        self.model = model ?? "gemini-2.5-flash-native-audio-preview-12-2025"
         super.init()
         setupAudioEngine()
     }
@@ -180,7 +185,11 @@ class GeminiLiveService: NSObject {
                     "parts": [
                         ["text": instructions]
                     ]
-                ]
+                ],
+                // Native-audio models only emit inputTranscription / outputTranscription
+                // (which handleServerContent renders as chat text) when these are enabled.
+                "input_audio_transcription": [String: Any](),
+                "output_audio_transcription": [String: Any]()
             ]
         ]
 
@@ -333,14 +342,13 @@ class GeminiLiveService: NSObject {
     }
 
     private func sendRealtimeInput(audioData: String) {
-        // Gemini Live realtime input format
+        // Gemini Live realtime input format. `media_chunks` is deprecated in the
+        // BidiGenerateContentRealtimeInput schema; audio is a single Blob now.
         let message: [String: Any] = [
             "realtime_input": [
-                "media_chunks": [
-                    [
-                        "mime_type": "audio/pcm;rate=16000",
-                        "data": audioData
-                    ]
+                "audio": [
+                    "mime_type": "audio/pcm;rate=16000",
+                    "data": audioData
                 ]
             ]
         ]
@@ -356,13 +364,12 @@ class GeminiLiveService: NSObject {
 
         print("📸 [Gemini] 发送图片: \(imageData.count) bytes")
 
+        // Camera frames go in as the realtime video stream (single Blob per message).
         let message: [String: Any] = [
             "realtime_input": [
-                "media_chunks": [
-                    [
-                        "mime_type": "image/jpeg",
-                        "data": base64Image
-                    ]
+                "video": [
+                    "mime_type": "image/jpeg",
+                    "data": base64Image
                 ]
             ]
         ]
