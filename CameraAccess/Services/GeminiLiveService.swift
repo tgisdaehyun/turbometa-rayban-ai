@@ -541,6 +541,23 @@ class GeminiLiveService: NSObject {
         }
     }
 
+    /// Adds context to the conversation without asking for a reply
+    /// (`clientContent` with `turnComplete: false`). Used to tell the model
+    /// that the input mode changed mid-session, since `systemInstruction` is
+    /// fixed once the session is set up.
+    func sendContextNote(_ text: String) {
+        guard isSessionConfigured else { return }
+        print("📝 [Gemini] 发送上下文说明: \(text)")
+        sendJSON([
+            "clientContent": [
+                "turns": [
+                    ["role": "user", "parts": [["text": text]]]
+                ],
+                "turnComplete": false
+            ]
+        ])
+    }
+
     // MARK: - Receive Messages
 
     private func receiveMessage() {

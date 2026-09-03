@@ -434,6 +434,7 @@ class LiveAIManager: ObservableObject {
             frameUpdateTimer?.invalidate()
             frameUpdateTimer = nil
             await streamViewModel?.stopSession()
+            notifyModelOfInputMode(.voice)
 
         case .vision:
             guard let streamViewModel else {
@@ -460,7 +461,25 @@ class LiveAIManager: ObservableObject {
             inputMode = .vision
             isImageSendingEnabled = hasSentFirstAudio
             startFrameUpdateTimer()
+            notifyModelOfInputMode(.vision)
         }
+    }
+
+    /// The session always starts with the voice-mode system prompt, and the
+    /// prompt cannot change afterwards, so tell the model in-conversation
+    /// when the user switches modes. Without this Gemini keeps answering
+    /// "I cannot see, please switch to Vision Chat" while it is already
+    /// receiving images.
+    private func notifyModelOfInputMode(_ mode: LiveAIInputMode) {
+        guard provider == .google else { return }
+        let note: String
+        switch mode {
+        case .vision:
+            note = "[Client notice] Vision Chat is now ON. From now on the client attaches one latest camera image as the user begins speaking. Describe the surroundings only from the image received for the current turn; if none arrived, say you cannot see it right now. Do not reply to this notice."
+        case .voice:
+            note = "[Client notice] Vision Chat is now OFF. No images accompany the user's speech from now on; if a request needs visual information, say you cannot see it right now and suggest switching to Vision Chat. Do not reply to this notice."
+        }
+        geminiService?.sendContextNote(note)
     }
 
     func switchInputMode(to mode: LiveAIInputMode) async {
