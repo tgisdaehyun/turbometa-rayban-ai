@@ -38,9 +38,9 @@ jobs:
           find /Users/runner -name "VTSessionOptionKey.swift" -exec sed -i '' 's/kVTCompressionPropertyKey_VariableBitRate as String/"VariableBitRate"/' {} + 2>/dev/null || true
 
           echo "=== 2. Patching Meta DAT SDK swiftinterface for Swift 6.0 compatibility ==="
-          find build -name "*.swiftinterface" -exec sed -i '' 's/6\.2\.3/6.0.3/g' {} + || true
+          find build -name "*.swiftinterface" -exec sed -i '' 's/6\.2\.3/6.0.3/g; s/6\.2/6.0.3/g' {} + || true
           find build -name "*.swiftinterface" -exec sed -i '' 's/ListenerStore<T> : MWDATCore.Announcer, @unchecked Swift.Sendable/ListenerStore<T : Swift.Sendable> : MWDATCore.Announcer, @unchecked Swift.Sendable/g' {} + || true
-          find /Users/runner -name "*.swiftinterface" -exec sed -i '' 's/6\.2\.3/6.0.3/g' {} + 2>/dev/null || true
+          find /Users/runner -name "*.swiftinterface" -exec sed -i '' 's/6\.2\.3/6.0.3/g; s/6\.2/6.0.3/g' {} + 2>/dev/null || true
           find /Users/runner -name "*.swiftinterface" -exec sed -i '' 's/ListenerStore<T> : MWDATCore.Announcer, @unchecked Swift.Sendable/ListenerStore<T : Swift.Sendable> : MWDATCore.Announcer, @unchecked Swift.Sendable/g' {} + 2>/dev/null || true
 
       - name: Build TurboMeta iOS App
