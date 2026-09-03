@@ -42,9 +42,9 @@
 		<key>AppLinkURLScheme</key>
 		<string>turbometa://</string>
 		<key>MetaAppID</key>
-		<string>$(META_APP_ID)</string>
+		<string>1628869938453260</string>
 		<key>ClientToken</key>
-		<string>$(CLIENT_TOKEN)</string>
+		<string>AR|1628869938453260|6d7c18911eba7ac249d31d18870f4993</string>
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
 	</dict>
@@ -54,6 +54,8 @@
 		<true/>
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Needed to connect to Meta AI Glasses</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Needed to connect to Meta AI Glasses</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>TurboMeta 需要访问麦克风以实现与智能眼镜的实时语音对话功能。</string>

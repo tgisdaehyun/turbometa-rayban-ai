@@ -8,16 +8,20 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16.2
+      - name: Select Xcode 16.4 / 16.3 (Swift 6.2)
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.2.app
+          if [ -d "/Applications/Xcode_16.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          elif [ -d "/Applications/Xcode_16.3.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.3.app
+          fi
           xcodebuild -version
 
       - name: Configure Git URL Overrides for SPM
@@ -31,21 +35,11 @@ jobs:
                      -scheme TurboMeta \
                      -derivedDataPath build
 
-      - name: Patch Dependencies (HaishinKit & Meta DAT SDK)
+      - name: Patch Dependencies (HaishinKit)
         run: |
-          echo "=== 1. Patching HaishinKit for iOS VideoToolbox ==="
+          echo "=== Patching HaishinKit for iOS VideoToolbox ==="
           find build -name "VTSessionOptionKey.swift" -exec sed -i '' 's/kVTCompressionPropertyKey_VariableBitRate as String/"VariableBitRate"/' {} + || true
           find /Users/runner -name "VTSessionOptionKey.swift" -exec sed -i '' 's/kVTCompressionPropertyKey_VariableBitRate as String/"VariableBitRate"/' {} + 2>/dev/null || true
-
-          echo "=== 2. Patching Meta DAT SDK swiftinterface for Swift 6.0 compatibility ==="
-          find build -name "*.swiftinterface" -exec sed -i '' 's/#if compiler(>=5\.3) && \$NonescapableTypes/#if true/g' {} + || true
-          find build -name "*.swiftinterface" -exec sed -i '' 's/#if compiler(>=5\.3) && \$SendingArgsAndResults/#if false/g' {} + || true
-          find build -name "*.swiftinterface" -exec sed -i '' 's/6\.2\.3/6.0.3/g; s/6\.2/6.0.3/g' {} + || true
-          find build -name "*.swiftinterface" -exec sed -i '' 's/ListenerStore<T> : MWDATCore.Announcer, @unchecked Swift.Sendable/ListenerStore<T : Swift.Sendable> : MWDATCore.Announcer, @unchecked Swift.Sendable/g' {} + || true
-          find /Users/runner -name "*.swiftinterface" -exec sed -i '' 's/#if compiler(>=5\.3) && \$NonescapableTypes/#if true/g' {} + 2>/dev/null || true
-          find /Users/runner -name "*.swiftinterface" -exec sed -i '' 's/#if compiler(>=5\.3) && \$SendingArgsAndResults/#if false/g' {} + 2>/dev/null || true
-          find /Users/runner -name "*.swiftinterface" -exec sed -i '' 's/6\.2\.3/6.0.3/g; s/6\.2/6.0.3/g' {} + 2>/dev/null || true
-          find /Users/runner -name "*.swiftinterface" -exec sed -i '' 's/ListenerStore<T> : MWDATCore.Announcer, @unchecked Swift.Sendable/ListenerStore<T : Swift.Sendable> : MWDATCore.Announcer, @unchecked Swift.Sendable/g' {} + 2>/dev/null || true
 
       - name: Build TurboMeta iOS App
         run: |
