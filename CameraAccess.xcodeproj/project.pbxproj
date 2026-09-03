@@ -12,6 +12,7 @@
 		26664DE8308E3F2981609421 /* QuickVisionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA3E36CE337855A7F17F2AC8 /* QuickVisionService.swift */; };
 		2746170F50E225008AB717CE /* QuickVisionModeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51A08DC107E5A57DDE6036C3 /* QuickVisionModeManager.swift */; };
 		2D194F19524B5A74AAA4F325 /* GeminiLiveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63EB4C91D8E0C8AC944DF95A /* GeminiLiveService.swift */; };
+		7A3C1E5B9D2F4A6C8B1E0D40 /* SpeechActivityDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A3C1E5B9D2F4A6C8B1E0D3F /* SpeechActivityDetector.swift */; };
 		3121D19C06DC68008799365A /* LiveAIIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0ECA1D14EBBE33F66EEF18 /* LiveAIIntent.swift */; };
 		4B69CCC32F050D4300D1D025 /* RTMPStreamingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B69CCC22F050D4300D1D025 /* RTMPStreamingView.swift */; };
 		4B69CCC52F050D5200D1D025 /* RTMPStreamingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B69CCC42F050D5200D1D025 /* RTMPStreamingViewModel.swift */; };
@@ -195,6 +196,7 @@
 		568E19B82D2116C7FE3B1829 /* QuickVisionIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = QuickVisionIntent.swift; sourceTree = "<group>"; };
 		5C0ECA1D14EBBE33F66EEF18 /* LiveAIIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LiveAIIntent.swift; sourceTree = "<group>"; };
 		63EB4C91D8E0C8AC944DF95A /* GeminiLiveService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeminiLiveService.swift; sourceTree = "<group>"; };
+		7A3C1E5B9D2F4A6C8B1E0D3F /* SpeechActivityDetector.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SpeechActivityDetector.swift; sourceTree = "<group>"; };
 		6B037E0156E90DE2314A9F47 /* QuickVisionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = QuickVisionView.swift; sourceTree = "<group>"; };
 		8FD96B772E6F0A9800F56AB1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8FD96B782E6F0A9800F56AB1 /* TurboMeta.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TurboMeta.entitlements; sourceTree = "<group>"; };
@@ -309,6 +311,7 @@
 				069172850B30A2766C8BD4B5 /* TTSService.swift */,
 				CA3E36CE337855A7F17F2AC8 /* QuickVisionService.swift */,
 				63EB4C91D8E0C8AC944DF95A /* GeminiLiveService.swift */,
+				7A3C1E5B9D2F4A6C8B1E0D3F /* SpeechActivityDetector.swift */,
 				C7F490219E64EC144DAF8A8C /* QuickVisionStorage.swift */,
 				LT1002000200020002 /* LiveTranslateService.swift */,
 				LT1006000600060006 /* LiveTranslateHistoryStorage.swift */,
@@ -675,6 +678,7 @@
 				4B69CCC72F050D5D00D1D025 /* RTMPStreamingService.swift in Sources */,
 				217BDD58A35C2D24403F74BF /* APIProviderManager.swift in Sources */,
 				2D194F19524B5A74AAA4F325 /* GeminiLiveService.swift in Sources */,
+				7A3C1E5B9D2F4A6C8B1E0D40 /* SpeechActivityDetector.swift in Sources */,
 				8AAC01AA9E2C673BDDD9C7C5 /* QuickVisionModels.swift in Sources */,
 				6FE225749B8E795D8D265971 /* QuickVisionStorage.swift in Sources */,
 				2746170F50E225008AB717CE /* QuickVisionModeManager.swift in Sources */,
