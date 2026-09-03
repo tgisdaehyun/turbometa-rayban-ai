@@ -15,9 +15,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Inspect Available Xcode Versions
+      - name: Select Xcode 16.2
         run: |
-          ls -d /Applications/Xcode* || true
+          sudo xcode-select -s /Applications/Xcode_16.2.app
           xcodebuild -version
 
       - name: Resolve Swift Package Dependencies
