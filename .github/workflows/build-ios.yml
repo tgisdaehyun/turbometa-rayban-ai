@@ -1,0 +1,119 @@
+name: Build iOS IPA (Creolophus fork)
+
+on:
+  workflow_dispatch:
+    inputs:
+      meta_app_id:
+        description: "MWDAT/MetaAppID from Wearables Developer Center. Optional with Developer Mode on in the Meta AI app."
+        required: false
+        default: ""
+      client_token:
+        description: "MWDAT/ClientToken from Wearables Developer Center. Optional with Developer Mode on."
+        required: false
+        default: ""
+  push:
+    branches:
+      - creolophus
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Meta DAT SDK 0.6.0 ships binary xcframeworks whose swiftinterface was
+      # emitted by Swift 6.2.3 (Xcode 26.2+). Compiling the app with an older
+      # toolchain (Xcode 16.x = Swift 6.1) still links, but the app and the
+      # framework disagree on the ABI of the resilient async/typed-throws
+      # protocol methods, and the first call into the SDK crashes on device.
+      - name: Select Xcode 26 (Swift 6.2)
+        run: |
+          for candidate in Xcode_26.3 Xcode_26.2 Xcode_26.1.1 Xcode_26.0.1; do
+            if [ -d "/Applications/${candidate}.app" ]; then
+              sudo xcode-select -s "/Applications/${candidate}.app"
+              break
+            fi
+          done
+          xcodebuild -version
+          swift --version
+          SWIFT_VER=$(swift --version 2>&1 | sed -n 's/.*Swift version \([0-9]*\.[0-9]*\).*/\1/p' | head -n 1)
+          if [ "$(printf '%s\n6.2\n' "$SWIFT_VER" | sort -V | head -n 1)" != "6.2" ]; then
+            echo "::error::Swift $SWIFT_VER is too old for Meta DAT SDK 0.6.0 (needs Swift 6.2+, Xcode 26)."
+            exit 1
+          fi
+
+      - name: Configure Git URL Overrides for SPM
+        run: |
+          git config --global url."https://github.com/tgisdaehyun/Logboard.git".insteadOf "https://github.com/shogo4405/Logboard.git"
+
+      - name: Resolve Swift Package Dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+                     -project CameraAccess.xcodeproj \
+                     -scheme TurboMeta \
+                     -derivedDataPath build
+
+      - name: Patch Dependencies (HaishinKit)
+        run: |
+          echo "=== Patching HaishinKit for iOS VideoToolbox ==="
+          find build -name "VTSessionOptionKey.swift" -exec sed -i '' 's/kVTCompressionPropertyKey_VariableBitRate as String/"VariableBitRate"/' {} + || true
+          find /Users/runner -name "VTSessionOptionKey.swift" -exec sed -i '' 's/kVTCompressionPropertyKey_VariableBitRate as String/"VariableBitRate"/' {} + 2>/dev/null || true
+
+      - name: Build TurboMeta iOS App
+        env:
+          META_APP_ID: ${{ github.event.inputs.meta_app_id }}
+          CLIENT_TOKEN: ${{ github.event.inputs.client_token }}
+        run: |
+          xcodebuild build \
+                     -project CameraAccess.xcodeproj \
+                     -scheme TurboMeta \
+                     -configuration Release \
+                     -destination 'generic/platform=iOS' \
+                     -derivedDataPath build \
+                     CODE_SIGN_IDENTITY="" \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGNING_ALLOWED=NO \
+                     AD_HOC_CODE_SIGNING_ALLOWED=YES \
+                     PRODUCT_BUNDLE_IDENTIFIER="com.smartview.glassai.app" \
+                     META_APP_ID="$META_APP_ID" \
+                     CLIENT_TOKEN="$CLIENT_TOKEN"
+          /usr/libexec/PlistBuddy -c "Print :MWDAT" build/Build/Products/Release-iphoneos/CameraAccess.app/Info.plist || true
+
+      - name: Package App into IPA
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -name "*.app" -maxdepth 1 | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: No .app bundle found!"
+            find build -name "*.app"
+            exit 1
+          fi
+          echo "Found app bundle: $APP_PATH"
+          cp -r "$APP_PATH" Payload/
+          zip -r TurboMeta-Creolophus.ipa Payload
+          ls -lh TurboMeta-Creolophus.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TurboMeta-Creolophus-iOS-IPA
+          path: TurboMeta-Creolophus.ipa
+          retention-days: 14
+
+      - name: Create GitHub Release with IPA
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/creolophus'
+        with:
+          tag_name: creolophus-build-${{ github.run_number }}
+          name: TurboMeta (Creolophus fork) iOS IPA Build #${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            Automated iOS IPA build of the Creolophus fork of TurboMeta
+            (DAT SDK 0.6.0, Live AI voice/vision modes, audio notes, web search).
+            Install via Sideloadly or SideStore on iOS 17+.
+          files: TurboMeta-Creolophus.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
