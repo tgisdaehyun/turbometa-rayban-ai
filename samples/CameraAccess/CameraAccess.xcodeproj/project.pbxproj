@@ -100,8 +100,8 @@
 		E6DA45182E79A63100E3F688 /* MockDeviceCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockDeviceCardView.swift; sourceTree = "<group>"; };
 		E6DA451A2E79A63100E3F688 /* MockDeviceKitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockDeviceKitView.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A3 /* VideoRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRecorder.swift; sourceTree = "<group>"; };
-		7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DiagnosticsView.swift; path = Views/DiagnosticsView.swift; sourceTree = "<group>"; };
-		7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DiagnosticsLog.swift; path = Diagnostics/DiagnosticsLog.swift; sourceTree = "<group>"; };
+		7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics/DiagnosticsLog.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A5 /* VideoCaptureHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoCaptureHandler.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A7 /* VideoFrameDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameDecoder.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A9 /* AudioInputHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioInputHandler.swift; sourceTree = "<group>"; };
@@ -182,8 +182,6 @@
 				D7A0000000000000000000A5 /* VideoCaptureHandler.swift */,
 				D7A0000000000000000000A7 /* VideoFrameDecoder.swift */,
 				D7A0000000000000000000A3 /* VideoRecorder.swift */,
-				7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */,
-				7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */,
 			);
 			path = Media;
 			sourceTree = "<group>";
@@ -199,6 +197,7 @@
 				8FFD605F2E84A2F70035E446 /* MainAppView.swift */,
 				8FD96B742E6F0A9800F56AB1 /* CapturePreviewView.swift */,
 				8FFD60532E849D0D0035E446 /* RegistrationView.swift */,
+				7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -214,6 +213,7 @@
 				8FD96B782E6F0A9800F56AB1 /* CameraAccess.entitlements */,
 				8FD96B792E6F0A9800F56AB1 /* CameraAccessApp.swift */,
 				8FD96B7B2E6F0A9800F56AB1 /* Info.plist */,
+				7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */,
 			);
 			path = CameraAccess;
 			sourceTree = "<group>";
