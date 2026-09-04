@@ -35,6 +35,7 @@
 		D7A0000000000000000000A4 /* VideoRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A0000000000000000000A3 /* VideoRecorder.swift */; };
 		7B1D1A6E5C2F4E8A9D3B0C21 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */; };
 		7B1D1A6E5C2F4E8A9D3B0C1F /* DiagnosticsLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */; };
+		7B1D1A6E5C2F4E8A9D3B0C31 /* ListenerTokenBag.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1D1A6E5C2F4E8A9D3B0C30 /* ListenerTokenBag.swift */; };
 		D7A0000000000000000000A6 /* VideoCaptureHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A0000000000000000000A5 /* VideoCaptureHandler.swift */; };
 		D7A0000000000000000000A8 /* VideoFrameDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A0000000000000000000A7 /* VideoFrameDecoder.swift */; };
 		D7A0000000000000000000AA /* AudioInputHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A0000000000000000000A9 /* AudioInputHandler.swift */; };
@@ -102,6 +103,7 @@
 		D7A0000000000000000000A3 /* VideoRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRecorder.swift; sourceTree = "<group>"; };
 		7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics/DiagnosticsLog.swift; sourceTree = "<group>"; };
+		7B1D1A6E5C2F4E8A9D3B0C30 /* ListenerTokenBag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Diagnostics/ListenerTokenBag.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A5 /* VideoCaptureHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoCaptureHandler.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A7 /* VideoFrameDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameDecoder.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A9 /* AudioInputHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioInputHandler.swift; sourceTree = "<group>"; };
@@ -214,6 +216,7 @@
 				8FD96B792E6F0A9800F56AB1 /* CameraAccessApp.swift */,
 				8FD96B7B2E6F0A9800F56AB1 /* Info.plist */,
 				7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */,
+				7B1D1A6E5C2F4E8A9D3B0C30 /* ListenerTokenBag.swift */,
 			);
 			path = CameraAccess;
 			sourceTree = "<group>";
@@ -420,6 +423,7 @@
 				D7A0000000000000000000A4 /* VideoRecorder.swift in Sources */,
 				7B1D1A6E5C2F4E8A9D3B0C21 /* DiagnosticsView.swift in Sources */,
 				7B1D1A6E5C2F4E8A9D3B0C1F /* DiagnosticsLog.swift in Sources */,
+				7B1D1A6E5C2F4E8A9D3B0C31 /* ListenerTokenBag.swift in Sources */,
 				D7A0000000000000000000A6 /* VideoCaptureHandler.swift in Sources */,
 				D7A0000000000000000000A8 /* VideoFrameDecoder.swift in Sources */,
 				D7A0000000000000000000AA /* AudioInputHandler.swift in Sources */,
@@ -793,7 +797,7 @@
 			repositoryURL = "https://github.com/facebook/meta-wearables-dat-ios";
 			requirement = {
 				kind = exactVersion;
-				version = 0.9.0;
+				version = 0.8.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

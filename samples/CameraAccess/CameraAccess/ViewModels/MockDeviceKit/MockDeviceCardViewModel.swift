@@ -99,7 +99,7 @@ final class MockDeviceCardViewModel {
         self.showCameraPermissionAlert = true
         return
       }
-      device.services.camera.setCameraFeed(cameraFacing: facing)
+      await device.services.camera.setCameraFeed(cameraFacing: facing)
       self.cameraSource = facing
       self.hasCameraFeed = false
     }

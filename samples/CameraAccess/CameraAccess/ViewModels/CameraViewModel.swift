@@ -157,7 +157,7 @@ final class CameraViewModel {
   @ObservationIgnored private let wearables: WearablesInterface
   @ObservationIgnored private let deviceSelector: AutoDeviceSelector
   @ObservationIgnored private var deviceSession: DeviceSession?
-  @ObservationIgnored private var camera: MWDATCamera.Camera?
+  @ObservationIgnored private var stream: MWDATCamera.Stream?
   @ObservationIgnored private var isStoppingForBackground: Bool = false
   @ObservationIgnored private var backgroundStopSuppressionTask: Task<Void, Never>?
 
@@ -243,7 +243,7 @@ final class CameraViewModel {
       showError("Start a session before previewing.")
       return
     }
-    guard camera == nil else { return }
+    guard stream == nil else { return }
 
     do {
       let status = try await wearables.checkPermissionStatus(.camera)
@@ -283,7 +283,7 @@ final class CameraViewModel {
   /// Creates the camera `Stream` on the started session and starts it. Callers
   /// must have ensured camera permission is granted first.
   private func beginStream(on session: DeviceSession) {
-    guard camera == nil else { return }
+    guard stream == nil else { return }
     // hvc1 (compressed HEVC) so frames can be written to file in passthrough mode.
     // Phone-mic audio for sound-in-video is captured app-side by AudioCaptureHandler,
     // so the SDK stream needs only the public video config (no audio codec).
@@ -295,21 +295,21 @@ final class CameraViewModel {
 
     DiagnosticsLog.shared.add("beginStream: codec=\(config.videoCodec) resolution=\(config.resolution) fps=\(config.frameRate) sessionState=\(session.state)")
     do {
-      // Add the consolidated `Camera` capability and stream through `camera.stream`.
-      guard let newCamera = try session.addCamera(config: config) else {
-        DiagnosticsLog.shared.add("addCamera returned nil")
+      // SDK 0.8.0: the stream is added to the session directly (no `Camera` wrapper).
+      guard let newStream = try session.addStream(config: config) else {
+        DiagnosticsLog.shared.add("addStream returned nil")
         showError("Couldn't create the camera. Try again.")
         return
       }
-      camera = newCamera
+      stream = newStream
       // Subscribe before start() so no initial state transitions are missed.
-      setupStreamListeners(for: newCamera.stream)
+      setupStreamListeners(for: newStream)
       // Reflect the in-flight request immediately; the observer drives it onward.
       streamState = .starting
-      newCamera.stream.start()
+      newStream.start()
     } catch {
-      DiagnosticsLog.shared.add("addCamera threw: \(describeError(error))")
-      camera = nil
+      DiagnosticsLog.shared.add("addStream threw: \(describeError(error))")
+      stream = nil
       showError(describeError(error))
     }
   }
@@ -318,13 +318,13 @@ final class CameraViewModel {
   /// streaming can be started again without re-creating the session. The stream
   /// `.stopped` observer performs the teardown — we don't eagerly reset here.
   func stopStreaming() {
-    guard let activeCamera = camera else { return }
+    guard let activeStream = stream else { return }
     videoRecorder.prepareToStop()
     // Reflect the in-flight request immediately; the observer drives it onward.
     streamState = .stopping
     // Stopping the camera cascades to its stream child and detaches the camera from the
     // session, so streaming can be started again with a fresh `addCamera()`.
-    activeCamera.stop()
+    activeStream.stop()
   }
 
   // MARK: - Capture
@@ -335,7 +335,7 @@ final class CameraViewModel {
       return
     }
     isCapturingPhoto = true
-    let success = camera?.stream.capturePhoto(format: .jpeg) ?? false
+    let success = stream?.capturePhoto(format: .jpeg) ?? false
     if !success {
       isCapturingPhoto = false
       showError(photoCaptureFailureMessage)
@@ -556,8 +556,8 @@ final class CameraViewModel {
     // user-stop and session-end paths the camera is already stopped, so this is a no-op; it is
     // load-bearing only when the stream terminates on its own (a stream-level error while the
     // session stays connected), since teardown cascades parent->child but not child->parent.
-    camera?.stop()
-    camera = nil
+    stream?.stop()
+    stream = nil
     streamState = .stopped
     currentVideoFrame = nil
     hasReceivedFirstFrame = false

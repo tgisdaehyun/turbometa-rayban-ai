@@ -49,6 +49,11 @@
 		<!-- Without Developer Mode, this key will need to be set with your Apple Developer Team ID - Set this in Xcode under Signing & Capabilities -->
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
+		<!-- Use the classic camera flow. The DAT App Model (DAM, mandatory from SDK 0.9.0)
+		     needs the glasses-side app and Wi-Fi hotspot entitlements, and its video stream
+		     never leaves waitingForDevice on a sideloaded build. SDK 0.8.0 still honours this. -->
+		<key>DAMEnabled</key>
+		<false/>
 	</dict>
 	<key>UISupportedExternalAccessoryProtocols</key>
 	<array>
