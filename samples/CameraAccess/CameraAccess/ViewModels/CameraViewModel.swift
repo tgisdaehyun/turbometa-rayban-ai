@@ -264,7 +264,7 @@ final class CameraViewModel {
   /// access was granted.
   func confirmCameraPermissionRedirect() async {
     showCameraPermissionRedirectConfirm = false
-    guard let session = deviceSession, session.state == .started, camera == nil else { return }
+    guard let session = deviceSession, session.state == .started, stream == nil else { return }
     do {
       let status = try await wearables.requestPermission(.camera)
       DiagnosticsLog.shared.add("requestPermission(.camera) -> \(status)")
