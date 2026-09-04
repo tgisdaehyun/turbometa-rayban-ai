@@ -291,6 +291,12 @@ struct CameraView: View {
       if isUpdateRequired {
         updateControls
       } else {
+        oneTapRecordButton
+        if let status = viewModel.oneTapStatus {
+          Text(status)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Color.white.opacity(0.85))
+        }
         // Reserved capture-row space + a single persistent button hold the button at
         // a fixed Y across every state.
         captureRow
@@ -390,6 +396,45 @@ struct CameraView: View {
       }
     }
     .accessibilityIdentifier(viewModel.hasSession ? "end_session_button" : "start_session_button")
+  }
+
+  /// One-tap Record/Stop: starts the session and the stream itself, records, and
+  /// saves the clip to Photos on stop. The step-by-step controls below stay for
+  /// photos, mic and manual control.
+  private var oneTapRecordButton: some View {
+    Button {
+      Task { await viewModel.oneTapToggle() }
+    } label: {
+      HStack(spacing: 10) {
+        if viewModel.isOneTapBusy && !viewModel.isRecording {
+          ProgressView().tint(.white)
+        } else {
+          Image(systemName: viewModel.isRecording ? "stop.fill" : "record.circle")
+            .font(.system(size: 20, weight: .semibold))
+        }
+        if viewModel.isRecording {
+          RecordingTimerLabel(viewModel: viewModel)
+        } else {
+          Text(viewModel.isOneTapBusy ? "Preparing…" : "Record")
+            .font(.system(size: 18, weight: .bold))
+        }
+      }
+      .foregroundStyle(.white)
+      .frame(maxWidth: .infinity)
+      .frame(height: 60)
+      .background(
+        Capsule().fill(viewModel.isRecording ? Color.recordAccent : Color.recordAccent.opacity(0.85))
+      )
+    }
+    .accessibilityIdentifier("one_tap_record_button")
+    .disabled(oneTapDisabled)
+    .opacity(oneTapDisabled ? 0.4 : 1)
+  }
+
+  private var oneTapDisabled: Bool {
+    if viewModel.isRecording { return false }
+    if viewModel.isOneTapBusy { return true }
+    return !viewModel.hasActiveDevice && !viewModel.hasSession
   }
 
   /// Start needs an active device; End stays available mid-stream/record — the SDK

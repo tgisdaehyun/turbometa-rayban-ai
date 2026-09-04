@@ -10,6 +10,7 @@ import AVFoundation
 import MWDATCamera
 import MWDATCore
 import Observation
+import Photos
 import SwiftUI
 import UIKit
 
@@ -86,6 +87,14 @@ final class CameraViewModel {
   var includeAudioInStream: Bool = true
   /// Mic denied — iOS won't re-prompt. Drives the toggle's disabled look + tap-to-Settings.
   var micDenied: Bool { AVAudioApplication.shared.recordPermission == .denied }
+
+  // MARK: - One-tap recording
+
+  /// True while the one-tap flow is bringing up the session/stream before the
+  /// recorder starts (or while a finished clip is being saved to Photos).
+  var isOneTapBusy: Bool = false
+  /// Short status line under the one-tap button ("Saved to Photos", ...).
+  var oneTapStatus: String?
 
   // MARK: - Errors
 
@@ -373,13 +382,104 @@ final class CameraViewModel {
     // Show a preview/share sheet (mirrors the photo flow) for the finalized file.
     switch await videoRecorder.stopRecording() {
     case .completed(let url):
-      activePreview = .video(url)
+      await saveToPhotos(url)
     case .noRecording:
       // Reached only after the intent guard + start wait, so while streaming this
       // means the recording never started (e.g. the writer failed to start).
       showError("Couldn't start recording. Try again.")
     case .failed:
       showError("Recording couldn't be saved. Try again.")
+    }
+  }
+
+  // MARK: - One-tap record
+
+  /// Single button: brings up the session and the stream as needed, then starts
+  /// recording; tapping again stops and saves the clip to Photos.
+  func oneTapToggle() async {
+    if isRecording {
+      await stopVideoRecording()
+      return
+    }
+    guard !isOneTapBusy else { return }
+    isOneTapBusy = true
+    oneTapStatus = nil
+    defer { isOneTapBusy = false }
+
+    if !hasSession {
+      guard hasActiveDevice else {
+        showError("No glasses connected. Connect them in the Meta AI app first.")
+        return
+      }
+      oneTapStatus = "Starting session…"
+      startSession()
+    }
+    guard await waitUntil(seconds: 20, { self.sessionState == .started }, abortIf: { self.sessionState == .stopped || self.sessionState == .idle }) else {
+      if sessionState != .started { showError("Couldn't start the session (state: \(sessionState)).") }
+      return
+    }
+
+    if !isStreaming {
+      oneTapStatus = "Starting camera…"
+      await startStreaming()
+      // The camera permission alert may now be up; the user's Continue in that alert
+      // starts the stream. Wait for it to come alive, bail if it dies or is cancelled.
+      let streaming = await waitUntil(seconds: 150, { self.isStreaming }) {
+        !self.hasSession
+          || (self.stream == nil && !self.showCameraPermissionRedirectConfirm)
+      }
+      guard streaming else {
+        oneTapStatus = nil
+        return
+      }
+    }
+
+    oneTapStatus = nil
+    startVideoRecording()
+  }
+
+  /// Polls a main-actor condition until it holds, the abort condition holds, or the
+  /// timeout elapses. Returns true only when the condition held.
+  private func waitUntil(seconds: Double, _ condition: () -> Bool, abortIf: () -> Bool = { false }) async -> Bool {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+      if condition() { return true }
+      if abortIf() { return false }
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+    return condition()
+  }
+
+  /// Saves a finished clip to the Photos library and deletes the temp file.
+  private func saveToPhotos(_ url: URL) async {
+    isOneTapBusy = true
+    oneTapStatus = "Saving to Photos…"
+    defer { isOneTapBusy = false }
+    let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+    guard status == .authorized || status == .limited else {
+      DiagnosticsLog.shared.add("Photos add-only permission: \(status.rawValue)")
+      // Keep the clip reachable through the share sheet instead of losing it.
+      oneTapStatus = nil
+      activePreview = .video(url)
+      showError("Photos access is off. Allow it in Settings, or share the clip from the preview.")
+      return
+    }
+    do {
+      try await PHPhotoLibrary.shared().performChanges {
+        PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+      }
+      try? FileManager.default.removeItem(at: url)
+      DiagnosticsLog.shared.add("saved recording to Photos: \(url.lastPathComponent)")
+      oneTapStatus = "Saved to Photos"
+      Task { [weak self] in
+        try? await Task.sleep(nanoseconds: 4_000_000_000)
+        if self?.oneTapStatus == "Saved to Photos" { self?.oneTapStatus = nil }
+      }
+    } catch {
+      DiagnosticsLog.shared.add("Photos save failed: \(describeError(error))")
+      oneTapStatus = nil
+      activePreview = .video(url)
+      showError("Couldn't save to Photos: \(error.localizedDescription). You can share it from the preview.")
     }
   }
 
