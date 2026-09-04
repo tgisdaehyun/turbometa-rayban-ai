@@ -1,0 +1,116 @@
+name: Build MetaRec iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      meta_app_id:
+        description: "MWDAT/MetaAppID from Wearables Developer Center. Optional with Developer Mode on in the Meta AI app."
+        required: false
+        default: ""
+      client_token:
+        description: "MWDAT/ClientToken from Wearables Developer Center. Optional with Developer Mode on."
+        required: false
+        default: ""
+  push:
+    branches:
+      - metarec
+    paths-ignore:
+      - "**/*.md"
+
+env:
+  PROJECT_DIR: samples/CameraAccess
+
+jobs:
+  build:
+    # The 0.9.0 sample needs Xcode 26.4+ / Swift 6.3; the macos-15 image tops
+    # out at Xcode 26.3, so use the macos-26 image.
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.4 or newer (Swift 6.3)
+        run: |
+          for candidate in Xcode_26.6 Xcode_26.5 Xcode_26.4.1 Xcode_26.4; do
+            if [ -d "/Applications/${candidate}.app" ]; then
+              sudo xcode-select -s "/Applications/${candidate}.app"
+              break
+            fi
+          done
+          xcodebuild -version
+          swift --version
+          SWIFT_VER=$(swift --version 2>&1 | sed -n 's/.*Swift version \([0-9]*\.[0-9]*\).*/\1/p' | head -n 1)
+          if [ "$(printf '%s\n6.3\n' "$SWIFT_VER" | sort -V | head -n 1)" != "6.3" ]; then
+            echo "::error::Swift $SWIFT_VER is too old for the DAT 0.9.0 Camera Access sample (needs Swift 6.3+, Xcode 26.4+)."
+            exit 1
+          fi
+
+      - name: Resolve Swift Package Dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          xcodebuild -resolvePackageDependencies \
+                     -project CameraAccess.xcodeproj \
+                     -scheme CameraAccess \
+                     -derivedDataPath build
+
+      - name: Build MetaRec (unsigned)
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          META_APP_ID: ${{ github.event.inputs.meta_app_id }}
+          CLIENT_TOKEN: ${{ github.event.inputs.client_token }}
+        run: |
+          xcodebuild build \
+                     -project CameraAccess.xcodeproj \
+                     -scheme CameraAccess \
+                     -configuration Release \
+                     -destination 'generic/platform=iOS' \
+                     -derivedDataPath build \
+                     CODE_SIGN_IDENTITY="" \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGNING_ALLOWED=NO \
+                     DEVELOPMENT_TEAM="" \
+                     PRODUCT_BUNDLE_IDENTIFIER="com.smartview.metarec" \
+                     META_APP_ID="$META_APP_ID" \
+                     CLIENT_TOKEN="$CLIENT_TOKEN"
+
+      - name: Package App into IPA
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::No .app bundle found"
+            find build -name "*.app"
+            exit 1
+          fi
+          echo "Found app bundle: $APP_PATH"
+          /usr/libexec/PlistBuddy -c "Print :MWDAT" "$APP_PATH/Info.plist" || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$APP_PATH/Info.plist" || true
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qr "$GITHUB_WORKSPACE/MetaRec.ipa" Payload
+          ls -lh "$GITHUB_WORKSPACE/MetaRec.ipa"
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MetaRec-iOS-IPA
+          path: MetaRec.ipa
+          retention-days: 14
+
+      - name: Create GitHub Release with IPA
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: metarec-build-${{ github.run_number }}
+          name: MetaRec iOS IPA Build #${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            Unsigned personal build of MetaRec: Meta's DAT SDK 0.9.0 Camera Access sample
+            configured as a glasses video recorder (HEVC passthrough, sound-in-video,
+            keeps recording in the background, highest streaming resolution).
+            Install with Sideloadly or SideStore on iOS 17.2+. Recordings are offered
+            through the share sheet; choose "Save Video" to keep them in Photos.
+          files: MetaRec.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
