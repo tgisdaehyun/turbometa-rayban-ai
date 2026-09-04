@@ -33,6 +33,8 @@
 		E6DA451E2E79A63100E3F688 /* CardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6DA45172E79A63100E3F688 /* CardView.swift */; };
 		E6DA451F2E79A63100E3F688 /* MockDeviceKitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6DA451A2E79A63100E3F688 /* MockDeviceKitView.swift */; };
 		D7A0000000000000000000A4 /* VideoRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A0000000000000000000A3 /* VideoRecorder.swift */; };
+		7B1D1A6E5C2F4E8A9D3B0C21 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */; };
+		7B1D1A6E5C2F4E8A9D3B0C1F /* DiagnosticsLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */; };
 		D7A0000000000000000000A6 /* VideoCaptureHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A0000000000000000000A5 /* VideoCaptureHandler.swift */; };
 		D7A0000000000000000000A8 /* VideoFrameDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A0000000000000000000A7 /* VideoFrameDecoder.swift */; };
 		D7A0000000000000000000AA /* AudioInputHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A0000000000000000000A9 /* AudioInputHandler.swift */; };
@@ -98,6 +100,8 @@
 		E6DA45182E79A63100E3F688 /* MockDeviceCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockDeviceCardView.swift; sourceTree = "<group>"; };
 		E6DA451A2E79A63100E3F688 /* MockDeviceKitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockDeviceKitView.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A3 /* VideoRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRecorder.swift; sourceTree = "<group>"; };
+		7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DiagnosticsView.swift; path = Views/DiagnosticsView.swift; sourceTree = "<group>"; };
+		7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DiagnosticsLog.swift; path = Diagnostics/DiagnosticsLog.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A5 /* VideoCaptureHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoCaptureHandler.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A7 /* VideoFrameDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameDecoder.swift; sourceTree = "<group>"; };
 		D7A0000000000000000000A9 /* AudioInputHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioInputHandler.swift; sourceTree = "<group>"; };
@@ -178,6 +182,8 @@
 				D7A0000000000000000000A5 /* VideoCaptureHandler.swift */,
 				D7A0000000000000000000A7 /* VideoFrameDecoder.swift */,
 				D7A0000000000000000000A3 /* VideoRecorder.swift */,
+				7B1D1A6E5C2F4E8A9D3B0C20 /* DiagnosticsView.swift */,
+				7B1D1A6E5C2F4E8A9D3B0C1E /* DiagnosticsLog.swift */,
 			);
 			path = Media;
 			sourceTree = "<group>";
@@ -412,6 +418,8 @@
 				E66D30242E7DA71900470B48 /* MockDeviceKitButton.swift in Sources */,
 				8F8F00782E8ACB4600A4BDAF /* WearablesViewModel.swift in Sources */,
 				D7A0000000000000000000A4 /* VideoRecorder.swift in Sources */,
+				7B1D1A6E5C2F4E8A9D3B0C21 /* DiagnosticsView.swift in Sources */,
+				7B1D1A6E5C2F4E8A9D3B0C1F /* DiagnosticsLog.swift in Sources */,
 				D7A0000000000000000000A6 /* VideoCaptureHandler.swift in Sources */,
 				D7A0000000000000000000A8 /* VideoFrameDecoder.swift in Sources */,
 				D7A0000000000000000000AA /* AudioInputHandler.swift in Sources */,

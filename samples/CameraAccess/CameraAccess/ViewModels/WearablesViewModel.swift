@@ -108,7 +108,7 @@ final class WearablesViewModel {
       } catch let error as RegistrationError {
         showError(error.description)
       } catch {
-        showError(error.localizedDescription)
+        showError(describeError(error))
       }
     }
   }
@@ -120,7 +120,7 @@ final class WearablesViewModel {
       } catch let error as UnregistrationError {
         showError(error.description)
       } catch {
-        showError(error.localizedDescription)
+        showError(describeError(error))
       }
     }
   }
@@ -142,6 +142,7 @@ final class WearablesViewModel {
   }
 
   func showError(_ error: String) {
+    DiagnosticsLog.shared.add("ALERT (wearables): \(error)")
     errorMessage = error
     showError = true
   }

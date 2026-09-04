@@ -25,6 +25,7 @@ struct CameraView: View {
   @State private var viewModel: CameraViewModel
   @Bindable var wearablesVM: WearablesViewModel
   @State private var showSettingsMenu: Bool = false
+  @State private var showDiagnostics: Bool = false
   @State private var isLaunchingUpdate: Bool = false
 
   init(wearables: WearablesInterface, wearablesVM: WearablesViewModel) {
@@ -101,6 +102,9 @@ struct CameraView: View {
       Button("Cancel", role: .cancel) {}
     } message: {
       Text("To preview your glasses camera, you'll be taken to the Meta AI app to grant access, then returned here.")
+    }
+    .sheet(isPresented: $showDiagnostics) {
+      DiagnosticsView()
     }
     .navigationBarHidden(true)
   }
@@ -227,6 +231,10 @@ struct CameraView: View {
       }
 
       Spacer()
+
+      iconButton("doc.text.magnifyingglass", id: "diagnostics_button") {
+        showDiagnostics = true
+      }
 
       // Top bar carries only the app-level settings/Disconnect control.
       iconButton("gearshape", id: "settings_button") {

@@ -203,8 +203,10 @@ final class CameraViewModel {
   /// `.starting` so the UI reflects the in-flight request immediately.
   func startSession() {
     guard !hasSession else { return }
+    DiagnosticsLog.shared.add("startSession: activeDevice=\(deviceSelector.activeDevice ?? "nil") hasActiveDevice=\(hasActiveDevice)")
     do throws(DeviceSessionError) {
       let session = try wearables.createSession(deviceSelector: deviceSelector)
+      DiagnosticsLog.shared.add("createSession OK, calling start()")
       deviceSession = session
       // Subscribe before start() so no initial state transitions are missed.
       observeSession(session)
@@ -244,13 +246,16 @@ final class CameraViewModel {
     guard camera == nil else { return }
 
     do {
-      if try await wearables.checkPermissionStatus(.camera) == .granted {
+      let status = try await wearables.checkPermissionStatus(.camera)
+      DiagnosticsLog.shared.add("camera permission status: \(status)")
+      if status == .granted {
         beginStream(on: session)
       } else {
         showCameraPermissionRedirectConfirm = true
       }
     } catch {
-      showError(error.localizedDescription)
+      DiagnosticsLog.shared.add("checkPermissionStatus failed: \(describeError(error))")
+      showError(describeError(error))
     }
   }
 
@@ -261,12 +266,15 @@ final class CameraViewModel {
     showCameraPermissionRedirectConfirm = false
     guard let session = deviceSession, session.state == .started, camera == nil else { return }
     do {
-      guard try await wearables.requestPermission(.camera) == .granted else {
-        showError("Camera permission denied")
+      let status = try await wearables.requestPermission(.camera)
+      DiagnosticsLog.shared.add("requestPermission(.camera) -> \(status)")
+      guard status == .granted else {
+        showError("Camera permission denied (\(status))")
         return
       }
     } catch {
-      showError(error.localizedDescription)
+      DiagnosticsLog.shared.add("requestPermission failed: \(describeError(error))")
+      showError(describeError(error))
       return
     }
     beginStream(on: session)
@@ -285,9 +293,11 @@ final class CameraViewModel {
       frameRate: 24
     )
 
+    DiagnosticsLog.shared.add("beginStream: codec=\(config.videoCodec) resolution=\(config.resolution) fps=\(config.frameRate) sessionState=\(session.state)")
     do {
       // Add the consolidated `Camera` capability and stream through `camera.stream`.
       guard let newCamera = try session.addCamera(config: config) else {
+        DiagnosticsLog.shared.add("addCamera returned nil")
         showError("Couldn't create the camera. Try again.")
         return
       }
@@ -298,8 +308,9 @@ final class CameraViewModel {
       streamState = .starting
       newCamera.stream.start()
     } catch {
+      DiagnosticsLog.shared.add("addCamera threw: \(describeError(error))")
       camera = nil
-      showError(error.localizedDescription)
+      showError(describeError(error))
     }
   }
 
@@ -400,6 +411,7 @@ final class CameraViewModel {
     deviceMonitorTask = Task { [weak self] in
       guard let self else { return }
       for await deviceId in deviceSelector.activeDeviceStream() {
+        DiagnosticsLog.shared.add("activeDevice -> \(deviceId ?? "nil")")
         hasActiveDevice = deviceId != nil
       }
     }
@@ -453,6 +465,7 @@ final class CameraViewModel {
   }
 
   private func handleSessionStateChange(_ state: DeviceSessionState) {
+    DiagnosticsLog.shared.add("session state -> \(state)")
     sessionState = state
     if state == .stopped {
       endBackgroundStopErrorSuppression()
@@ -461,13 +474,14 @@ final class CameraViewModel {
   }
 
   private func handleSessionError(_ error: DeviceSessionError) {
+    DiagnosticsLog.shared.add("session error: \(describeError(error)) (stoppingForBackground=\(isStoppingForBackground))")
     // Backgrounding the app intentionally ends the preview session; the SDK can
     // still emit teardown errors while that stop converges, and surfacing those
     // would show a false "something went wrong" alert on return.
     guard !isStoppingForBackground else { return }
     // All session errors surface through the single alert, including
     // `datAppOnTheGlassesUpdateRequired`, which the SDK delivers as a one-shot event.
-    showError(error.localizedDescription)
+    showError(describeError(error))
   }
 
   /// Terminal session cleanup — drop the reference and observers so the next
@@ -525,6 +539,7 @@ final class CameraViewModel {
   }
 
   private func handleStreamStateChange(_ state: StreamState) {
+    DiagnosticsLog.shared.add("stream state -> \(state)")
     streamState = state
     if state == .stopped {
       // Terminal — finalize any recording, then converge teardown. Covers both
@@ -555,10 +570,11 @@ final class CameraViewModel {
   }
 
   private func handleStreamError(_ error: StreamError) {
+    DiagnosticsLog.shared.add("stream error: \(describeError(error)) (stoppingForBackground=\(isStoppingForBackground))")
     // Same bounded suppression window as `handleSessionError`: hide only the
     // expected teardown noise from an intentional background-driven stop.
     guard !isStoppingForBackground else { return }
-    showError(error.localizedDescription)
+    showError(describeError(error))
   }
 
   private func handlePhotoData(_ data: PhotoData) {
@@ -569,6 +585,7 @@ final class CameraViewModel {
   }
 
   private func showError(_ message: String) {
+    DiagnosticsLog.shared.add("ALERT: \(message)")
     errorMessage = message
     showError = true
   }
