@@ -67,7 +67,10 @@ jobs:
             -project CameraAccess.xcodeproj -scheme CameraAccess \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -derivedDataPath build-tests \
-            CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM=""
+            CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="METARECTST" META_APP_ID=0
+          # DAT initializes its secure store before XCTest starts. The simulator
+          # host therefore needs an ad-hoc signature and a keychain access group.
+          codesign -d --entitlements :- build-tests/Build/Products/Debug-iphonesimulator/CameraAccess.app
           xcrun simctl install "$SIMULATOR_ID" build-tests/Build/Products/Debug-iphonesimulator/CameraAccess.app
           xcrun simctl privacy "$SIMULATOR_ID" revoke photos-add com.meta.wearables.external.CameraAccess
           xcodebuild test-without-building \
@@ -75,9 +78,10 @@ jobs:
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -derivedDataPath build-tests \
             -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 60 \
             -only-testing:CameraAccessTests/ViewModelIntegrationTests/testBackgroundingActiveStreamStopsSessionWithoutShowingError \
             -only-testing:CameraAccessTests/ViewModelIntegrationTests/testBackgroundRecordingKeepsSessionAndSuspendsPreviewUntilActive \
-            CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM=""
+            CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="METARECTST" META_APP_ID=0
 
       - name: Build MetaRec (unsigned)
         working-directory: ${{ env.PROJECT_DIR }}
