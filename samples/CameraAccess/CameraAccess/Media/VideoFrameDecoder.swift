@@ -21,6 +21,7 @@ import os
 /// corrupt frames reach the UI. Thread-safe — call `decode(_:)` from any thread.
 final class VideoFrameDecoder: Sendable {
   private struct State {
+    var isEnabled: Bool = true
     var session: VTDecompressionSession?
     var formatDescription: CMFormatDescription?
     var consecutiveFailures: Int = 0
@@ -28,6 +29,9 @@ final class VideoFrameDecoder: Sendable {
     var awaitingKeyframe: Bool = false
   }
 
+  // Serialize lifecycle changes with the entire synchronous decode, including
+  // image conversion. Once setEnabled(false) returns, no decode remains in flight.
+  private let decodeLock = NSLock()
   private let state: OSAllocatedUnfairLock<State>
   private let ciContext: CIContext
 
@@ -36,10 +40,36 @@ final class VideoFrameDecoder: Sendable {
     self.ciContext = CIContext()
   }
 
+  var isEnabled: Bool { state.withLockUnchecked { $0.isEnabled } }
+
+  func setEnabled(_ enabled: Bool) {
+    decodeLock.lock()
+    defer { decodeLock.unlock() }
+    state.withLockUnchecked { state in
+      guard state.isEnabled != enabled else { return }
+      state.isEnabled = enabled
+      if !enabled {
+        if let session = state.session {
+          VTDecompressionSessionInvalidate(session)
+        }
+        state.session = nil
+        state.formatDescription = nil
+        state.lastGoodImage = nil
+        state.consecutiveFailures = 0
+        // Skipped frames break inter-frame dependencies. Rebuild on resume and
+        // wait for a keyframe instead of feeding P-frames to an old session.
+        state.awaitingKeyframe = true
+      }
+    }
+  }
+
   /// Decodes an HEVC sample buffer into a `UIImage`. Creates the decompression session
   /// lazily and recreates it if the format changes or it goes invalid. On failure,
   /// returns the last good frame until a keyframe arrives.
   func decode(_ sampleBuffer: CMSampleBuffer) -> UIImage? {
+    decodeLock.lock()
+    defer { decodeLock.unlock() }
+    guard isEnabled else { return nil }
     guard CMSampleBufferGetDataBuffer(sampleBuffer) != nil,
       let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer)
     else {
@@ -73,9 +103,8 @@ final class VideoFrameDecoder: Sendable {
         state.awaitingKeyframe = true
       }
 
-      // Force software decoding so the session survives backgrounding. iOS tears down
-      // hardware sessions when backgrounded, and a fresh one stalls until the next
-      // keyframe — visible stutter.
+      // Preserve the existing foreground decoder configuration. Backgrounding
+      // explicitly invalidates this session; recording never needs decoding.
       var decoderSpec: CFDictionary?
       if #available(iOS 17.0, *) {
         decoderSpec =

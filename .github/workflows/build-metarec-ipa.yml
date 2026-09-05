@@ -55,6 +55,30 @@ jobs:
                      -scheme CameraAccess \
                      -derivedDataPath build
 
+      - name: Test background recording and preview lifecycle
+        working-directory: ${{ env.PROJECT_DIR }}
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          SIMULATOR_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if v["name"].startswith("iPhone")))')
+          xcrun simctl boot "$SIMULATOR_ID" || true
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          xcodebuild build-for-testing \
+            -project CameraAccess.xcodeproj -scheme CameraAccess \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -derivedDataPath build-tests \
+            CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM=""
+          xcrun simctl install "$SIMULATOR_ID" build-tests/Build/Products/Debug-iphonesimulator/CameraAccess.app
+          xcrun simctl privacy "$SIMULATOR_ID" deny photos-add com.meta.wearables.external.CameraAccess
+          xcodebuild test-without-building \
+            -project CameraAccess.xcodeproj -scheme CameraAccess \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -derivedDataPath build-tests \
+            -parallel-testing-enabled NO \
+            -only-testing:CameraAccessTests/ViewModelIntegrationTests/testBackgroundingActiveStreamStopsSessionWithoutShowingError \
+            -only-testing:CameraAccessTests/ViewModelIntegrationTests/testBackgroundRecordingKeepsSessionAndSuspendsPreviewUntilActive \
+            CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM=""
+
       - name: Build MetaRec (unsigned)
         working-directory: ${{ env.PROJECT_DIR }}
         env:
@@ -106,11 +130,12 @@ jobs:
           name: MetaRec iOS IPA Build #${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           body: |
-            Unsigned personal build of MetaRec: Meta's DAT SDK 0.9.0 Camera Access sample
-            configured as a glasses video recorder (HEVC passthrough, sound-in-video,
-            keeps recording in the background, highest streaming resolution).
-            Install with Sideloadly or SideStore on iOS 17.2+. Recordings are offered
-            through the share sheet; choose "Save Video" to keep them in Photos.
+            MetaRec personal iOS build (Meta DAT SDK 0.8.0).
+            Keeps active recording sessions when the app enters the background or the phone locks.
+            Suspends preview decoding while inactive and resumes it from a keyframe when active again.
+            HEVC video and optional microphone audio are saved to Photos when recording stops.
+            Unsigned IPA: install with Sideloadly or SideStore on iOS 17.2+.
+            Real-device locked-screen duration and wireless stability still require verification.
           files: MetaRec.ipa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

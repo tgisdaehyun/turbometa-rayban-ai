@@ -177,7 +177,7 @@ final class CameraViewModel {
   @ObservationIgnored private let videoFrameDecoder = VideoFrameDecoder()
 
   @ObservationIgnored private var deviceMonitorTask: Task<Void, Never>?
-  @ObservationIgnored private var appLifecycleTask: Task<Void, Never>?
+  @ObservationIgnored private var appLifecycleObservers: [NSObjectProtocol] = []
   @ObservationIgnored private let sessionTokenBag = ListenerTokenBag()
   @ObservationIgnored private let streamTokenBag = ListenerTokenBag()
 
@@ -200,7 +200,9 @@ final class CameraViewModel {
 
   isolated deinit {
     deviceMonitorTask?.cancel()
-    appLifecycleTask?.cancel()
+    for observer in appLifecycleObservers {
+      NotificationCenter.default.removeObserver(observer)
+    }
     backgroundStopSuppressionTask?.cancel()
     deviceSession?.stop()
   }
@@ -520,17 +522,39 @@ final class CameraViewModel {
   }
 
   private func startAppLifecycleMonitoring() {
-    appLifecycleTask = Task { [weak self] in
-      guard let self else { return }
-      for await _ in NotificationCenter.default.notifications(named: UIApplication.didEnterBackgroundNotification) {
-        self.handleDidEnterBackground()
-      }
-    }
+    videoFrameDecoder.setEnabled(UIApplication.shared.applicationState == .active)
+    let center = NotificationCenter.default
+    appLifecycleObservers = [
+      center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated {
+          self?.videoFrameDecoder.setEnabled(false)
+        }
+      },
+      center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated {
+          self?.handleDidEnterBackground()
+        }
+      },
+      center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated {
+          self?.videoFrameDecoder.setEnabled(true)
+          DiagnosticsLog.shared.add("foreground: preview decoding resumed")
+        }
+      },
+    ]
   }
 
   private func handleDidEnterBackground() {
+    videoFrameDecoder.setEnabled(false)
+    // isRecording includes the armed state before the first keyframe arrives.
+    // Stopping the parent session here would also stop the passthrough writer.
+    guard !isRecording else {
+      DiagnosticsLog.shared.add("background: keeping recording session; preview decoding suspended")
+      return
+    }
     guard hasSession, hasStream, sessionState != .stopping else { return }
 
+    DiagnosticsLog.shared.add("background: ending preview-only session")
     beginBackgroundStopErrorSuppression()
     endSession()
   }
@@ -607,13 +631,15 @@ final class CameraViewModel {
       // keeps writing while the app is backgrounded.
       self.appendVideoFrame(frame)
 
-      // Decode the compressed hvc1 frame for preview off the main actor.
+      // The decoder returns nil without decoding while inactive/backgrounded.
+      // Recording above remains independent of the preview lifecycle.
       let previewImage = self.videoFrameDecoder.decode(frame.sampleBuffer)
 
       Task { @MainActor [weak self] in
         guard let self else { return }
         // Keep the live surface stable while a capture preview is onscreen.
-        if UIApplication.shared.applicationState != .background,
+        if UIApplication.shared.applicationState == .active,
+          self.videoFrameDecoder.isEnabled,
           activePreview == nil,
           !isCapturingPhoto,
           let image = previewImage

@@ -7,6 +7,7 @@
  */
 
 @testable import CameraAccess
+import AVFoundation
 import Foundation
 import MWDATCamera
 import MWDATCore
@@ -256,10 +257,56 @@ final class ViewModelIntegrationTests: XCTestCase {
 
     await observeUntil(timeout: 5) { !viewModel.hasSession }
     XCTAssertFalse(viewModel.hasSession)
-    XCTAssertEqual(viewModel.sessionState, .idle)
+    XCTAssertEqual(viewModel.sessionState, .stopped)
     XCTAssertEqual(viewModel.streamState, .stopped)
     XCTAssertFalse(viewModel.showError)
   }
+
+  func testBackgroundRecordingKeepsSessionAndSuspendsPreviewUntilActive() async throws {
+    let camera = try XCTUnwrap(cameraKit)
+    let videoURL = try XCTUnwrap(Bundle.main.url(forResource: "plant", withExtension: "mp4"))
+    camera.setCameraFeed(fileURL: videoURL)
+
+    let viewModel = CameraViewModel(wearables: Wearables.shared)
+    self.viewModel = viewModel
+    // Avoid a microphone permission prompt in the mock lifecycle test.
+    viewModel.includeAudioInStream = false
+    NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+    await observeUntil(timeout: 5) { viewModel.hasActiveDevice }
+    viewModel.startSession()
+    await observeUntil(timeout: 5) { viewModel.isSessionActive }
+    await viewModel.startStreaming()
+    await observeUntil(timeout: 10) { viewModel.currentVideoFrame != nil }
+
+    viewModel.startVideoRecording()
+    // Background immediately, including the armed-before-first-keyframe case.
+    NotificationCenter.default.post(name: UIApplication.willResignActiveNotification, object: nil)
+    NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+    let lastPreview = viewModel.currentVideoFrame
+    await observeUntil(timeout: 10) { viewModel.recordingStartDate != nil }
+    try await Task.sleep(for: .seconds(2))
+    XCTAssertTrue(viewModel.isSessionActive)
+    XCTAssertTrue(viewModel.isStreaming)
+    XCTAssertTrue(viewModel.isRecording)
+    XCTAssertTrue(viewModel.currentVideoFrame === lastPreview, "Preview must stay frozen while recording continues")
+
+    NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+    await observeUntil(timeout: 10) { viewModel.currentVideoFrame !== lastPreview }
+    XCTAssertTrue(viewModel.isRecording, "Resuming preview must not restart or stop the recording")
+    // CI denies Photos add-only access so the finalized file is returned through
+    // the app's share-preview fallback, without an interactive permission prompt.
+    await viewModel.stopVideoRecording()
+    guard case .video(let url) = viewModel.activePreview else {
+      XCTFail("Expected a finalized recording in the share-preview fallback")
+      return
+    }
+    let duration = try await AVURLAsset(url: url).load(.duration)
+    XCTAssertGreaterThan(CMTimeGetSeconds(duration), 2, "Background frames must reach the video file")
+    viewModel.dismissCapturePreview()
+    viewModel.endSession()
+    await observeUntil(timeout: 5) { !viewModel.hasSession }
+  }
+
 }
 
 // MARK: - Test Helpers
