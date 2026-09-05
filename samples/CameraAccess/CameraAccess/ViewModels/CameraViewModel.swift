@@ -82,7 +82,8 @@ final class CameraViewModel {
   /// recorder. Drives the isolated `RecordingTimerLabel`'s `TimelineView`, so the timer
   /// counts continuously — including through a stream pause. `nil` when not recording.
   var recordingStartDate: Date?
-  /// Whether to record phone-microphone audio into videos (sound-in-video).
+  /// Whether to record microphone audio into videos (sound-in-video). The source
+  /// is the glasses mic when the glasses are connected for audio, else the phone's.
   /// Toggled from the mic button shown while streaming.
   var includeAudioInStream: Bool = true
   /// Mic denied — iOS won't re-prompt. Drives the toggle's disabled look + tap-to-Settings.
@@ -294,7 +295,8 @@ final class CameraViewModel {
   private func beginStream(on session: DeviceSession) {
     guard stream == nil else { return }
     // hvc1 (compressed HEVC) so frames can be written to file in passthrough mode.
-    // Phone-mic audio for sound-in-video is captured app-side by AudioCaptureHandler,
+    // Sound-in-video is captured app-side by AudioCaptureHandler, from the glasses
+    // mic when available and the phone mic otherwise,
     // so the SDK stream needs only the public video config (no audio codec).
     let config = StreamConfiguration(
       videoCodec: VideoCodec.hvc1,

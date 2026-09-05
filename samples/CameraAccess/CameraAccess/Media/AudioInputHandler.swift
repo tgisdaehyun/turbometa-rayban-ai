@@ -10,8 +10,14 @@ import AVFoundation
 import UIKit
 import os
 
-/// Drives the phone microphone: engine setup, Bluetooth routing, interruption and
-/// app-lifecycle handling. Thread-safe via `OSAllocatedUnfairLock`.
+/// Drives the recording microphone: engine setup, input selection, Bluetooth
+/// routing, interruption and app-lifecycle handling. Thread-safe via
+/// `OSAllocatedUnfairLock`.
+///
+/// Input preference: the glasses microphone whenever the glasses are connected to
+/// the phone as a Bluetooth audio device, otherwise the phone's own microphone.
+/// The choice is re-made whenever an input appears or disappears, so putting the
+/// glasses on or taking them off switches the source without ending a recording.
 ///
 /// Locking discipline: the lock guards state only. Every `AVAudioEngine` /
 /// `AVAudioSession` call runs *outside* the lock — they can invoke the tap callback
@@ -32,6 +38,7 @@ final class AudioInputHandler: Sendable {
     var isListening: Bool = false
     var wasListeningBeforeInterruption: Bool = false
     var isBluetoothConnected: Bool = false
+    var activeInputName: String = "phone microphone"
     var onAudioBuffer: (@Sendable ([Float], Int, AudioStreamBasicDescription) -> Void)?
     var onInterruptionResume: (() -> Void)?
   }
@@ -39,6 +46,9 @@ final class AudioInputHandler: Sendable {
   private let state = OSAllocatedUnfairLock(uncheckedState: State())
 
   init() {}
+
+  /// Human-readable name of the microphone currently feeding the recording.
+  var activeInputName: String { state.withLockUnchecked { $0.activeInputName } }
 
   func setup() {
     setupInterruptionHandling()
@@ -205,7 +215,16 @@ final class AudioInputHandler: Sendable {
 
   private func handleRouteChange(reason: AVAudioSession.RouteChangeReason) {
     switch reason {
-    case .newDeviceAvailable, .oldDeviceUnavailable, .categoryChange, .override, .wakeFromSleep, .routeConfigurationChange:
+    case .newDeviceAvailable, .oldDeviceUnavailable:
+      // The glasses (or another headset) just appeared or went away, so the input
+      // choice has to be re-made. A reset, not just a re-select: the tap is bound
+      // to the old input's format and has to be reinstalled on the new one.
+      // Only these two reasons reset — reacting to `.override` or
+      // `.routeConfigurationChange` would loop, since selecting an input raises
+      // exactly those.
+      updateBluetoothStatus()
+      attemptAudioReset()
+    case .categoryChange, .override, .wakeFromSleep, .routeConfigurationChange:
       updateBluetoothStatus()
     case .unknown, .noSuitableRouteForCategory:
       break
@@ -273,6 +292,52 @@ final class AudioInputHandler: Sendable {
     state.withLockUnchecked { $0.isBluetoothConnected = inputPort != nil }
   }
 
+  /// Bluetooth names the glasses advertise. Matched case-insensitively so another
+  /// headset in range cannot win over the glasses.
+  private static let glassesNameHints = ["ray-ban", "rayban", "meta", "oakley"]
+
+  /// The glasses microphone if the glasses are among the available inputs, else
+  /// `nil`, which leaves iOS on the phone's built-in microphone.
+  ///
+  /// A name match is tried first, because several Bluetooth headsets can be
+  /// connected at once and only one of them is the glasses. If nothing matches by
+  /// name — the user may have renamed them — any hands-free input is taken, since
+  /// for this app a headset is far likelier to be the glasses than not.
+  private nonisolated static func glassesInput(in session: AVAudioSession) -> AVAudioSessionPortDescription? {
+    let handsFree = (session.availableInputs ?? []).filter { $0.portType == .bluetoothHFP }
+    let byName = handsFree.first { port in
+      let name = port.portName.lowercased()
+      return glassesNameHints.contains { name.contains($0) }
+    }
+    return byName ?? handsFree.first
+  }
+
+  /// Routes capture to the glasses when they are there and to the phone when they
+  /// are not. Falls back to the phone on any failure rather than leaving the
+  /// session pointed at an input that cannot deliver.
+  private func applyPreferredInput(_ session: AVAudioSession) {
+    let glasses = Self.glassesInput(in: session)
+    var name = "phone microphone"
+    do {
+      try session.setPreferredInput(glasses)
+      if let glasses {
+        name = "glasses microphone (\(glasses.portName))"
+      }
+    } catch {
+      Self.logger.error("Couldn't select the glasses microphone: \(error.localizedDescription)")
+      try? session.setPreferredInput(nil)
+      name = "phone microphone (glasses unavailable)"
+    }
+    let changed: Bool = state.withLockUnchecked { state in
+      guard state.activeInputName != name else { return false }
+      state.activeInputName = name
+      return true
+    }
+    if changed {
+      DiagnosticsLog.log("audio input: \(name)")
+    }
+  }
+
   private func configureBluetooth() {
     let audioSession = AVAudioSession.sharedInstance()
     do {
@@ -283,6 +348,8 @@ final class AudioInputHandler: Sendable {
       state.withLockUnchecked { $0.isBluetoothConnected = false }
       return
     }
+
+    applyPreferredInput(audioSession)
 
     let inputPort = audioSession.currentRoute.inputs.first(where: { $0.portType == .bluetoothHFP })
 

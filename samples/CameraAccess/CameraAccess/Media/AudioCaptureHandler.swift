@@ -10,7 +10,7 @@ import AVFoundation
 import UIKit
 import os
 
-/// Writes the phone-mic audio track for a recording: owns the audio
+/// Writes the microphone audio track for a recording: owns the audio
 /// `AVAssetWriterInput` and `AudioInputHandler`, encodes AAC, and gap-fills silence
 /// across interruptions to keep the track aligned with the timeline.
 /// Thread-safe via `OSAllocatedUnfairLock`, which guards the non-Sendable state.
