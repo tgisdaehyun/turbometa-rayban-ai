@@ -30,6 +30,8 @@ final class WearablesViewModel {
   @ObservationIgnored private var registrationTask: Task<Void, Never>?
   @ObservationIgnored private var deviceStreamTask: Task<Void, Never>?
   @ObservationIgnored private var setupDeviceStreamTask: Task<Void, Never>?
+  @ObservationIgnored private var cameraPermissionTask: Task<Void, Never>?
+  @ObservationIgnored private var didRequestCameraPermission = false
   private let wearables: WearablesInterface
   private var deviceCompatibility: [DeviceIdentifier: Compatibility] = [:]
   private var compatibilityListenerTokens: [DeviceIdentifier: AnyListenerToken] = [:]
@@ -47,6 +49,43 @@ final class WearablesViewModel {
     registrationTask = Task {
       for await registrationState in wearables.registrationStateStream() {
         self.registrationState = registrationState
+        DiagnosticsLog.shared.add("registrationState: \(registrationState)")
+        if registrationState == .registered {
+          self.ensureCameraPermission()
+        }
+      }
+    }
+
+    // Relaunch of an already-registered app: the stream above may not replay
+    // `.registered`, so break the deadlock here too.
+    if self.registrationState == .registered {
+      ensureCameraPermission()
+    }
+  }
+
+  /// Asks for glasses camera permission as soon as registration completes.
+  ///
+  /// A wearable does not appear in `devicesStream` until camera permission has been
+  /// granted in the Meta AI app. The stock sample only requests that permission from
+  /// the streaming controls — which stay disabled until a device appears. On glasses
+  /// that do not auto-grant, those two facts deadlock: no permission, so no device;
+  /// no device, so no way to ask for permission. The UI then sits on "Waiting for an
+  /// active device" forever, which is exactly what a sideloaded MetaRec build did.
+  private func ensureCameraPermission() {
+    guard !didRequestCameraPermission else { return }
+    didRequestCameraPermission = true
+    cameraPermissionTask = Task { @MainActor in
+      do {
+        let status = try await wearables.checkPermissionStatus(.camera)
+        DiagnosticsLog.shared.add("post-registration camera permission: \(status)")
+        guard status != .granted else { return }
+        // Redirects to the Meta AI app and returns here; expected right after the
+        // user taps "Connect my glasses".
+        let requested = try await wearables.requestPermission(.camera)
+        DiagnosticsLog.shared.add("post-registration requestPermission(.camera) -> \(requested)")
+      } catch {
+        DiagnosticsLog.shared.add("post-registration camera permission failed: \(describeError(error))")
+        // Not surfaced as an alert: the streaming controls request it again on demand.
       }
     }
   }
@@ -55,6 +94,7 @@ final class WearablesViewModel {
     registrationTask?.cancel()
     deviceStreamTask?.cancel()
     setupDeviceStreamTask?.cancel()
+    cameraPermissionTask?.cancel()
   }
 
   private func setupDeviceStream() async {
