@@ -69,7 +69,7 @@ jobs:
             -derivedDataPath build-tests \
             CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM=""
           xcrun simctl install "$SIMULATOR_ID" build-tests/Build/Products/Debug-iphonesimulator/CameraAccess.app
-          xcrun simctl privacy "$SIMULATOR_ID" deny photos-add com.meta.wearables.external.CameraAccess
+          xcrun simctl privacy "$SIMULATOR_ID" revoke photos-add com.meta.wearables.external.CameraAccess
           xcodebuild test-without-building \
             -project CameraAccess.xcodeproj -scheme CameraAccess \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
