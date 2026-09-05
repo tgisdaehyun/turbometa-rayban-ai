@@ -310,8 +310,16 @@ final class ViewModelIntegrationTests: XCTestCase {
     let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
     reader.add(output)
     XCTAssertTrue(reader.startReading())
-    let firstFrame = try XCTUnwrap(output.copyNextSampleBuffer())
-    XCTAssertTrue(firstFrame.isHEVCKeyframe())
+    // The fixture starts with leading non-sync samples. Match the live decoder
+    // and recorder by waiting for an actual HEVC random-access frame.
+    var firstKeyframe: CMSampleBuffer?
+    while let frame = output.copyNextSampleBuffer() {
+      if frame.isHEVCKeyframe() {
+        firstKeyframe = frame
+        break
+      }
+    }
+    let firstFrame = try XCTUnwrap(firstKeyframe)
 
     let decoder = VideoFrameDecoder()
     XCTAssertNotNil(decoder.decode(firstFrame))
