@@ -33,8 +33,14 @@ extension MeetingCoreTests {
     func testRequestUsesHeaderAndStructuredAudio() throws {
         let r = try GeminiClient.request(audio: WAV.header(byteCount: 0), duration: 15, model: "gemini-2.5-flash", key: "fixture-key", glossary: "0x643, R818")
         XCTAssertFalse(r.url!.absoluteString.contains("fixture-key")); XCTAssertEqual(r.value(forHTTPHeaderField: "x-goog-api-key"), "fixture-key")
-        let body = String(data: r.httpBody!, encoding: .utf8)!
-        XCTAssertTrue(body.contains("audio/wav")); XCTAssertTrue(body.contains("responseSchema")); XCTAssertTrue(body.contains("0x643"))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: r.httpBody!) as? [String: Any])
+        let contents = try XCTUnwrap(body["contents"] as? [[String: Any]])
+        let parts = try XCTUnwrap(contents.first?["parts"] as? [[String: Any]])
+        let inline = try XCTUnwrap(parts.first?["inlineData"] as? [String: String])
+        XCTAssertEqual(inline["mimeType"], "audio/wav")
+        XCTAssertEqual(inline["data"], WAV.header(byteCount: 0).base64EncodedString())
+        XCTAssertNotNil((body["generationConfig"] as? [String: Any])?["responseSchema"])
+        XCTAssertTrue((parts.last?["text"] as? String)?.contains("0x643") == true)
     }
     func testRejectsTruncatedModelResponse() {
         XCTAssertThrowsError(try GeminiClient.decode(Data(#"{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"{}"}]}}]}"#.utf8), duration: 15))
