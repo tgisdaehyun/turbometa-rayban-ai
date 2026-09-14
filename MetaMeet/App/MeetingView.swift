@@ -5,6 +5,7 @@ import MeetingCore
 struct MeetingView: View {
     @EnvironmentObject private var store: MeetingStore
     @EnvironmentObject private var meta: MetaConnection
+    @AppStorage("transcriptionPace") private var transcriptionPace = "fast"
     @AppStorage("readTranslations") private var readTranslations = false
     @AppStorage("metaStreamingEnabled") private var metaStreamingEnabled = false
     @AppStorage("preferGlasses") private var preferGlasses = true
@@ -33,7 +34,7 @@ struct MeetingView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         Text(store.activeID != nil ? "듣고 있습니다." : "회의 내용을\n한국어로.")
                             .font(.system(size: 36, weight: .medium)).lineSpacing(9)
-                        Text(store.activeID != nil ? "음성을 저장하고 있습니다.\n첫 번역은 약 2초 분량을 녹음한 뒤 표시됩니다." : "Meta 안경을 연결하고\n아래 버튼을 한 번 누르세요.")
+                        Text(store.activeID != nil ? "음성을 저장하고 있습니다.\n선택한 속도로 음성을 모아 번역합니다." : "Meta 안경을 연결하고\n아래 버튼을 한 번 누르세요.")
                             .font(.body).foregroundStyle(.secondary).lineSpacing(5)
                         if store.isPreview { Text("미리보기 · 실제 녹음 아님").font(.caption).foregroundStyle(.secondary) }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 28)
@@ -46,8 +47,8 @@ struct MeetingView: View {
                         if !store.processing { Button("다시 전사") { store.retry(meeting.id) }.font(.caption.bold()) }
                     }.padding(.horizontal, 24).padding(.vertical, 10)
                 }
-                if let seconds = store.lastAPISeconds, store.activeID != nil {
-                    Text(String(format: "2초 단위 전사 · 최근 API %.1f초", seconds)).font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 24)
+                if store.lastAPISeconds != nil, store.activeID != nil {
+                    Text("\(TranscriptionPace.saved(transcriptionPace).title) 모드 · 전사 중").font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 24)
                 }
                 if readTranslations { SpeechStatusView(speaker: store.speaker).padding(.horizontal, 24) }
                 controls

@@ -27,7 +27,7 @@ final class AudioCapture {
     private var nextOffset = 0.0
     private var failed = false
     private var levelCount = 0
-    private let chunkBytes = 2 * WAV.bytesPerSecond
+    private var chunkBytes = 2 * WAV.bytesPerSecond
 
     static func permission() async -> Bool {
         await withCheckedContinuation { continuation in
@@ -47,7 +47,8 @@ final class AudioCapture {
         precondition(Thread.isMainThread)
         guard !recording else { return }
         self.directory = directory; self.preferGlasses = preferGlasses; began = Date()
-        io.sync { chunkID = 0; nextOffset = 0; failed = false; byteCount = 0 }
+        let pace = TranscriptionPace.saved(UserDefaults.standard.string(forKey: "transcriptionPace"))
+        io.sync { chunkBytes = pace.seconds * WAV.bytesPerSecond; chunkID = 0; nextOffset = 0; failed = false; byteCount = 0 }
         recording = true
         observe()
         do { try configureAndStart() }

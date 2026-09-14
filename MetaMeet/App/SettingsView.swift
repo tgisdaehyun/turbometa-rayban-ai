@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject private var store: MeetingStore
     @EnvironmentObject private var meta: MetaConnection
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("transcriptionPace") private var transcriptionPace = "fast"
     @AppStorage("viewMode") private var viewMode = "korean"
     @AppStorage("translationFontSize") private var fontSize = 32.0
     @AppStorage("keepScreenAwake") private var keepAwake = true
@@ -67,10 +68,15 @@ struct SettingsView: View {
                     if !microphoneResult.isEmpty { Text(microphoneResult).font(.footnote) }
                     Text("Meta 앱에서 개발자 모드를 켜고 연결을 승인해 주세요. 마이크 사용은 iOS에서 별도로 허용합니다. 안경 입력이 없으면 iPhone 마이크로 자동 전환하며 실제 입력을 회의 화면에 표시합니다.").font(.footnote).foregroundStyle(.secondary)
                 }
+                Section {
+                    Picker("음성 처리 속도", selection: $transcriptionPace) {
+                        ForEach(TranscriptionPace.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
+                    }.pickerStyle(.segmented).disabled(store.activeID != nil || store.starting)
+                } header: { Text("음성 처리 속도") } footer: { Text("빨리는 짧게 나누어 바로 처리하고, 느리게는 더 긴 문장을 모아 처리합니다. 새 회의를 시작할 때 적용됩니다.") }
                 Section("번역 읽어주기") {
                     Toggle("Bluetooth 안경으로 한국어 읽기", isOn: $readTranslations).disabled(store.activeID != nil)
                     HStack { Text("읽기 속도"); Slider(value: $speechRate, in: 0.35...0.6, step: 0.05) }
-                    Text("회의 중 새 한국어 번역이 나오면 Bluetooth 오디오로 읽습니다. 음성은 iPhone의 한국어 음성을 사용합니다. 2초 단위 전사 지연은 그대로이며, 오래 밀린 번역은 읽지 않습니다. 에코 제거는 실제 안경에서 확인해야 합니다.").font(.footnote).foregroundStyle(.secondary)
+                    Text("회의 중 새 한국어 번역이 나오면 Bluetooth 오디오로 읽습니다. 음성은 iPhone의 한국어 음성을 사용합니다. 번역이 도착하면 읽기 시작하며, 오래 밀린 번역은 읽지 않습니다. 에코 제거는 실제 안경에서 확인해야 합니다.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Gemini API") {
                     SecureField("API 키 변경 (선택)", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("apiKey")
@@ -105,7 +111,7 @@ struct SettingsView: View {
                     Text("연결 테스트는 앱에 포함된 짧은 합성 중국어 음성을 Google로 보냅니다. 음성 인식 품질은 실제 회의에서 확인해야 합니다. 녹음한 음성은 선택한 Gemini 모델로 전송됩니다.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("녹음과 보관") {
-                    Text("약 2초 단위로 전사하므로 표시까지 녹음 시간과 API 처리 시간이 필요합니다. 연결이 끊기면 음성을 보관하고 ‘다시 전사’로 이어갑니다.")
+                    Text("선택한 속도에 따라 음성을 모아 전사합니다. 표시까지 녹음 시간과 API 처리 시간이 필요합니다. 연결이 끊기면 음성을 보관하고 ‘다시 전사’로 이어갑니다.")
                     Text("화면을 잠가도 녹음하도록 구성했습니다. 통화나 오디오 장치 전환으로 생기는 공백은 회의 상태 기록에 남습니다.")
                     Text("음성 WAV와 회의 JSON은 파일 앱 → 나의 iPhone → MetaMeet에서 찾을 수 있습니다. 회의를 삭제하기 전까지 보관합니다.")
                 }.font(.footnote).foregroundStyle(.secondary)
