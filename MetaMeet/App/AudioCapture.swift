@@ -38,7 +38,7 @@ final class AudioCapture {
     static func microphones() async throws -> [Microphone] {
         guard await permission() else { throw NSError(domain: "MetaMeet.Audio", code: 5, userInfo: [NSLocalizedDescriptionKey: "iPhone 설정에서 마이크 권한을 허용해 주세요."]) }
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .defaultToSpeaker])
+        try session.setCategory(.playAndRecord, mode: UserDefaults.standard.bool(forKey: "readTranslations") ? .voiceChat : .default, options: [.allowBluetooth, .defaultToSpeaker])
         try session.setActive(true)
         defer { try? session.setActive(false, options: .notifyOthersOnDeactivation) }
         return (session.availableInputs ?? []).filter { $0.portType == .bluetoothHFP }.map { Microphone(id: $0.uid, name: $0.portName) }
@@ -75,7 +75,7 @@ final class AudioCapture {
         io.sync { finishChunk(); nextOffset = Date().timeIntervalSince(began) }
         let session = AVAudioSession.sharedInstance()
         // Meta registration and iOS HFP routing are separate. Confirm the actual microphone before writing audio.
-        try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .defaultToSpeaker])
+        try session.setCategory(.playAndRecord, mode: UserDefaults.standard.bool(forKey: "readTranslations") ? .voiceChat : .default, options: [.allowBluetooth, .defaultToSpeaker])
         try session.setPreferredSampleRate(16000)
         try session.setActive(true)
         let inputs = session.availableInputs ?? []
@@ -93,6 +93,10 @@ final class AudioCapture {
         if preferGlasses && preferred?.portType != .bluetoothHFP { onEvent?("안경 마이크를 사용할 수 없어 iPhone 마이크로 녹음합니다.") }
         let engine = AVAudioEngine()
         let input = engine.inputNode
+        if UserDefaults.standard.bool(forKey: "readTranslations") {
+            do { try input.setVoiceProcessingEnabled(true) }
+            catch { onEvent?("에코 제거를 켜지 못했습니다. 읽어준 번역이 마이크에 다시 들어갈 수 있습니다.") }
+        }
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0,
               let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true),

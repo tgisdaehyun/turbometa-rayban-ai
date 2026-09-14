@@ -11,6 +11,8 @@ struct SettingsView: View {
     @AppStorage("preferGlasses") private var preferGlasses = true
     @AppStorage("geminiModel") private var model = GeminiModels.defaultModel
     @AppStorage("glossary") private var glossary = "CAN, CAN FD, ECU, i.MX95, i.MX8MP, R818, LVDS, HDMI, MCU"
+    @AppStorage("readTranslations") private var readTranslations = false
+    @AppStorage("speechRate") private var speechRate = 0.5
     @AppStorage("metaStreamingEnabled") private var metaStreamingEnabled = false
     @AppStorage("preferredInputUID") private var microphoneID = ""
     @State private var microphones: [AudioCapture.Microphone] = []
@@ -58,6 +60,11 @@ struct SettingsView: View {
                     }
                     if !microphoneResult.isEmpty { Text(microphoneResult).font(.footnote) }
                     Text("Meta 앱에서 개발자 모드를 켜고 연결을 승인해 주세요. 마이크 사용은 iOS에서 별도로 허용합니다. 안경 입력이 없으면 iPhone 마이크로 자동 전환하며 실제 입력을 회의 화면에 표시합니다.").font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("번역 읽어주기") {
+                    Toggle("Bluetooth 안경으로 한국어 읽기", isOn: $readTranslations).disabled(store.activeID != nil)
+                    HStack { Text("읽기 속도"); Slider(value: $speechRate, in: 0.35...0.6, step: 0.05) }
+                    Text("회의 중 새 한국어 번역이 나오면 Bluetooth 오디오로 읽습니다. 음성은 iPhone의 한국어 음성을 사용합니다. 15초 단위 전사 지연은 그대로이며, 오래 밀린 번역은 읽지 않습니다. 에코 제거는 실제 안경에서 확인해야 합니다.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Gemini API") {
                     SecureField("API 키 변경 (선택)", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("apiKey")

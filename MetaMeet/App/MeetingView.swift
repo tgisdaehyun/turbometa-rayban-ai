@@ -5,6 +5,7 @@ import MeetingCore
 struct MeetingView: View {
     @EnvironmentObject private var store: MeetingStore
     @EnvironmentObject private var meta: MetaConnection
+    @AppStorage("readTranslations") private var readTranslations = false
     @AppStorage("metaStreamingEnabled") private var metaStreamingEnabled = false
     @AppStorage("preferGlasses") private var preferGlasses = true
     @Environment(\.scenePhase) private var scenePhase
@@ -45,6 +46,7 @@ struct MeetingView: View {
                         if !store.processing { Button("다시 전사") { store.retry(meeting.id) }.font(.caption.bold()) }
                     }.padding(.horizontal, 24).padding(.vertical, 10)
                 }
+                if readTranslations { SpeechStatusView(speaker: store.speaker).padding(.horizontal, 24) }
                 controls
             }
             .background(Color.black.ignoresSafeArea())
@@ -156,4 +158,9 @@ struct ActivityView: UIViewControllerRepresentable {
     let items: [Any]
     func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+struct SpeechStatusView: View {
+    @ObservedObject var speaker: TranslationSpeaker
+    var body: some View { Text(speaker.status).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
 }

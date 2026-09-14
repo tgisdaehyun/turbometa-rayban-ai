@@ -17,6 +17,7 @@ final class MeetingStore: ObservableObject {
     @Published var processing = false
     @Published var hasKey = !Keychain.read().isEmpty
     @Published var isPreview = false
+    let speaker = TranslationSpeaker()
     private var capture: AudioCapture?
     private var worker: Task<Void, Never>?
     private var queuePaused = false
@@ -133,7 +134,7 @@ final class MeetingStore: ObservableObject {
     }
     func stop() {
         guard let id = activeID else { return }
-        capture?.stop(); activeID = nil; paused = false; level = 0
+        speaker.stop(); capture?.stop(); activeID = nil; paused = false; level = 0
         edit(id) { $0.ended = Date() }
         // Closed chunk callbacks arrive on main after stop; they also wake the durable queue.
         runQueue()
@@ -186,6 +187,9 @@ final class MeetingStore: ObservableObject {
                     }
                     try Task.checkCancellation()
                     self.updateChunk(meeting.id, chunk.id) { $0.utterances = result; $0.state = .complete; $0.error = nil }
+                    if self.activeID == meeting.id && Date().timeIntervalSince(meeting.created) - (chunk.start + chunk.duration) < 60 {
+                        for utterance in result { self.speaker.enqueue(utterance.korean) }
+                    }
                 } catch is CancellationError {
                     self.updateChunk(meeting.id, chunk.id) { $0.state = .queued; $0.error = "앱을 다시 열어 전사를 이어갈 수 있습니다." }; break
                 } catch {
