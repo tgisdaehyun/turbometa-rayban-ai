@@ -25,6 +25,7 @@ targets:
       - Assets.xcassets
       - PrivacyInfo.xcprivacy
       - EmbeddedGeminiKey.txt
+      - Core/Tests/MeetingCoreTests/Fixtures/mandarin.wav
     dependencies:
       - package: MeetingCore
       - package: MetaWearablesDAT
@@ -35,6 +36,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rsnav.metameet
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: MetaMeet.entitlements
     info:
       path: Info.plist
       properties:

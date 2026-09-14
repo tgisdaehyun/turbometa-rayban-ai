@@ -68,14 +68,14 @@ final class MetaConnection: ObservableObject {
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
             guard session.state == .started else { throw NSError(domain: "MetaMeet.Meta", code: 2, userInfo: [NSLocalizedDescriptionKey: "안경 세션 연결 시간이 초과됐습니다. 안경 착용과 Meta 앱 권한을 확인해 주세요."]) }
-            guard let stream = try session.addStream(config: StreamConfiguration(videoCodec: .h264, resolution: .low, frameRate: 24)) else { throw NSError(domain: "MetaMeet.Meta", code: 3, userInfo: [NSLocalizedDescriptionKey: "안경 스트림을 열지 못했습니다."]) }
+            guard let stream = try session.addStream(config: StreamConfiguration(videoCodec: .hvc1, resolution: .low, frameRate: 24)) else { throw NSError(domain: "MetaMeet.Meta", code: 3, userInfo: [NSLocalizedDescriptionKey: "안경 스트림을 열지 못했습니다."]) }
             self.stream = stream
-            streamTokens = [stream.statePublisher.listen { [weak self] state in
+            streamTokens = [stream.statePublisher.listen { [weak self] (state: StreamState) in
                 Task { @MainActor in
                     self?.streamStatus = "Meta 스트림: \(String(describing: state))"
                     self?.streamActive = state != .stopped && state != .stopping
                 }
-            }, stream.errorPublisher.listen { [weak self] error in
+            }, stream.errorPublisher.listen { [weak self] (error: StreamError) in
                 Task { @MainActor in self?.error = "Meta 스트림: \(error.description)"; self?.stopStreaming() }
             }]
             // Video frames are neither decoded, displayed, recorded nor sent to Gemini.
@@ -83,7 +83,8 @@ final class MetaConnection: ObservableObject {
         } catch { stopStreaming(); self.error = "Meta 스트리밍 실패: \(error.localizedDescription)" }
     }
     func stopStreaming() {
-        streamTokens.forEach { $0.cancel() }; streamTokens.removeAll()
+        let tokens = streamTokens; streamTokens.removeAll()
+        Task { for token in tokens { await token.cancel() } }
         stream?.stop(); stream = nil; session?.stop(); session = nil
         streamActive = false; streamStatus = "스트리밍 꺼짐"
     }

@@ -62,3 +62,5 @@ xcodebuild -project MetaMeet.xcodeproj -scheme MetaMeet -destination 'generic/pl
 - 개발용 MetaAppID 0을 사용하므로 Meta 앱의 안경 개발자 모드를 켜야 합니다.
 - 빌드 전 빈 `EmbeddedGeminiKey.txt` 파일을 만듭니다. 개인 키는 로컬에서 IPA에 넣으며 소스 관리와 CI에는 전송하지 않습니다. 개인 키가 내장된 IPA는 타인에게 배포하지 마세요.
 - 실제 API 테스트는 환경 변수로 키를 제공할 때만 실행됩니다. CI에서는 이 테스트를 건너뛰고 별도로 로컬에서 실제 REST 요청을 검증합니다.
+
+- 설정의 번역 읽어주기를 켜면 새 한국어 번역을 Bluetooth 출력으로 읽습니다. 기본값은 꺼짐이며 새 회의부터 적용합니다. 읽기 대기열은 최신 3개로 제한하고 회의 종료 시 중지합니다. 음성 처리의 에코 제거를 켜며 실제 안경에서 재입력/에코를 확인해야 합니다.

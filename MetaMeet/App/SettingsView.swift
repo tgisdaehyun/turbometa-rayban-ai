@@ -88,14 +88,15 @@ struct SettingsView: View {
                         Task {
                             checking = true; defer { checking = false }
                             do {
-                                let audio = WAV.header(byteCount: WAV.bytesPerSecond) + Data(repeating: 0, count: WAV.bytesPerSecond)
-                                _ = try await GeminiClient().transcribe(audio: audio, duration: 1, model: model, key: Keychain.read(), glossary: "")
+                                guard let fixture = Bundle.main.url(forResource: "mandarin", withExtension: "wav") else { throw GeminiFailure("연결 테스트 음성을 찾을 수 없습니다.") }
+                                let audio = try Data(contentsOf: fixture)
+                                _ = try await GeminiClient().transcribe(audio: audio, duration: 4.93, model: model, key: Keychain.read(), glossary: "")
                                 checkResult = "연결 성공 · \(model) 음성 요청과 응답 형식 확인 완료"
                             } catch { checkResult = error.localizedDescription }
                         }
                     }.disabled(checking || store.processing)
                     if !checkResult.isEmpty { Text(checkResult).font(.footnote).textSelection(.enabled) }
-                    Text("연결 테스트는 짧은 무음 WAV를 Google로 보냅니다. 음성 인식 품질은 실제 회의에서 확인해야 합니다. 녹음한 음성은 선택한 Gemini 모델로 전송됩니다.").font(.footnote).foregroundStyle(.secondary)
+                    Text("연결 테스트는 앱에 포함된 짧은 합성 중국어 음성을 Google로 보냅니다. 음성 인식 품질은 실제 회의에서 확인해야 합니다. 녹음한 음성은 선택한 Gemini 모델로 전송됩니다.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section {
                     TextEditor(text: $glossary).frame(minHeight: 90).autocorrectionDisabled()

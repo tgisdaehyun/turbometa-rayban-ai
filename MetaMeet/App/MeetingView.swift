@@ -70,7 +70,10 @@ struct MeetingView: View {
                 if phase == .active { store.foreground() }
                 UIApplication.shared.isIdleTimerDisabled = phase == .active && keepAwake && store.activeID != nil
             }
-            .onChange(of: store.activeID) { _, id in UIApplication.shared.isIdleTimerDisabled = keepAwake && id != nil }
+            .onChange(of: store.activeID) { _, id in
+                UIApplication.shared.isIdleTimerDisabled = keepAwake && id != nil
+                if id == nil { meta.stopStreaming() }
+            }
             .onChange(of: keepAwake) { _, value in UIApplication.shared.isIdleTimerDisabled = value && store.activeID != nil }
         }
     }
