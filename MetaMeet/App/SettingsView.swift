@@ -37,6 +37,13 @@ struct SettingsView: View {
                 } header: { Text("화면") } footer: { Text("한국어 크게 보기에서도 중국어 원문은 저장됩니다. 내보내기에는 원문과 번역이 모두 포함됩니다.") }
                 Section("안경 · 마이크") {
                     Text(meta.status).font(.footnote)
+                    Text(meta.permissionStatus).font(.footnote)
+                    Text(meta.deviceStatus).font(.footnote)
+                    DisclosureGroup("Meta 연결 진단") {
+                        Text(meta.diagnostics.isEmpty ? "기록 없음" : meta.diagnostics).font(.caption.monospaced()).textSelection(.enabled)
+                        ShareLink(item: meta.diagnostics) { Label("진단 공유", systemImage: "square.and.arrow.up") }
+                    }
+                    if meta.streamStarting { Button("연결 대기 취소") { meta.stopStreaming() } }
                     Button(meta.connecting ? "Meta 앱 승인 대기 중" : "Meta 앱 연결 승인") { Task { await meta.connect() } }.disabled(meta.connecting || store.activeID != nil)
                     if let error = meta.error { Text(error).font(.footnote).foregroundStyle(.orange) }
                     Toggle("회의 중 Meta 스트리밍 연결", isOn: $metaStreamingEnabled).disabled(store.activeID != nil || meta.streamStarting)
