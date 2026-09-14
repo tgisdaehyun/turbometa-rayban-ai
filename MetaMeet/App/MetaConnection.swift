@@ -19,6 +19,7 @@ final class MetaConnection: ObservableObject {
     private var deviceWatcher: Task<Void, Never>?
     private var selectorWatcher: Task<Void, Never>?
     private var generation = 0
+    private var connectionStage = ""
     private var session: DeviceSession?
     private var stream: MWDATCamera.Stream?
     private var streamTokens: [any AnyListenerToken] = []
@@ -94,40 +95,30 @@ final class MetaConnection: ObservableObject {
         let startGeneration = generation
         streamStarting = true; error = nil
         defer { if generation == startGeneration { streamStarting = false } }
-        var stage = "카메라 권한 확인"
+        connectionStage = "카메라 권한 확인"
         do {
-            var permission: PermissionStatus = .denied
-            do { permission = try await wearables.checkPermissionStatus(.camera) }
-            catch let failure as PermissionError where failure == .noDevice {
-                log("권한 조회: noDevice. 기기 발견을 기다리기 전에 Meta 권한 요청을 진행합니다.")
-            }
+            var permission = try await initialPermission(wearables)
             permissionStatus = "카메라 권한: \(String(describing: permission))"
             log(permissionStatus)
             if permission != .granted {
-                stage = "Meta 앱 권한 요청"
+                connectionStage = "Meta 앱 권한 요청"
                 permission = try await wearables.requestPermission(.camera)
                 permissionStatus = "카메라 권한: \(String(describing: permission))"; log(permissionStatus)
             }
             guard generation == startGeneration else { throw CancellationError() }
             guard permission == .granted else { throw NSError(domain: "MetaMeet.Meta", code: 1, userInfo: [NSLocalizedDescriptionKey: "Meta 스트리밍 권한이 허용되지 않았습니다."]) }
-            stage = "사용 가능한 안경 선택"
+            connectionStage = "사용 가능한 안경 선택"
             streamStatus = "안경 연결 대기 중 · 최대 20초"
             let session: DeviceSession = try await ReadinessGate.run(attempts: 100, intervalNanoseconds: 200_000_000) {
                 guard self.generation == startGeneration else { throw CancellationError() }
                 self.refreshDevices()
                 // AutoDeviceSelector initializes asynchronously. A registered app is not yet a ready device.
                 guard let device = self.selector?.activeDevice, wearables.devices.contains(device) else { return nil }
-                do {
-                    // Bind the ready device explicitly; do not construct another uninitialized auto selector.
-                    return try wearables.createSession(deviceSelector: SpecificDeviceSelector(device: device))
-                } catch let failure as DeviceSessionError where failure == .noEligibleDevice {
-                    // The device may disappear between the readiness check and createSession.
-                    return nil
-                }
+                return try self.createReadySession(wearables, device: device)
             }
             self.session = session
             log("안경 선택 완료 · 세션 생성됨")
-            stage = "안경 세션 시작"
+            connectionStage = "안경 세션 시작"
             try session.start()
             for _ in 0..<150 {
                 guard generation == startGeneration else { throw CancellationError() }
@@ -136,7 +127,7 @@ final class MetaConnection: ObservableObject {
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
             guard session.state == .started else { throw NSError(domain: "MetaMeet.Meta", code: 2, userInfo: [NSLocalizedDescriptionKey: "안경 세션 연결 시간이 초과됐습니다. 안경 착용과 Meta 앱 권한을 확인해 주세요."]) }
-            stage = "카메라 스트림 시작"
+            connectionStage = "카메라 스트림 시작"
             guard let stream = try session.addStream(config: StreamConfiguration(videoCodec: .hvc1, resolution: .low, frameRate: 24)) else { throw NSError(domain: "MetaMeet.Meta", code: 3, userInfo: [NSLocalizedDescriptionKey: "안경 스트림을 열지 못했습니다."]) }
             self.stream = stream
             streamTokens = [stream.statePublisher.listen { [weak self] (state: StreamState) in
@@ -156,9 +147,26 @@ final class MetaConnection: ObservableObject {
             if error is ReadinessFailure {
                 message = "20초 동안 사용 가능한 안경을 찾지 못했습니다. 안경을 착용하고, 다른 안경 앱의 스트리밍을 종료한 뒤 다시 시도해 주세요. 아래 진단에서 SDK 기기 수와 연결 상태를 확인할 수 있습니다."
             } else { message = error.localizedDescription }
-            log("\(stage) 실패: \(message)")
+            log("\(connectionStage) 실패: \(message)")
             stopStreaming()
-            self.error = "\(stage): \(message)"
+            self.error = "\(connectionStage): \(message)"
+        }
+    }
+    private func initialPermission(_ wearables: any WearablesInterface) async throws -> PermissionStatus {
+        do { return try await wearables.checkPermissionStatus(.camera) }
+        catch {
+            if let failure = error as? PermissionError, failure == .noDevice {
+                log("권한 조회: noDevice · Meta 권한 요청부터 진행합니다")
+                return .denied
+            }
+            throw error
+        }
+    }
+    private func createReadySession(_ wearables: any WearablesInterface, device: DeviceIdentifier) throws -> DeviceSession? {
+        do { return try wearables.createSession(deviceSelector: SpecificDeviceSelector(device: device)) }
+        catch {
+            if let failure = error as? DeviceSessionError, failure == .noEligibleDevice { return nil }
+            throw error
         }
     }
     func stopStreaming() {
