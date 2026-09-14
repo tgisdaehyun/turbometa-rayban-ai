@@ -10,7 +10,6 @@ struct SettingsView: View {
     @AppStorage("keepScreenAwake") private var keepAwake = true
     @AppStorage("preferGlasses") private var preferGlasses = true
     @AppStorage("geminiModel") private var model = GeminiModels.defaultModel
-    @AppStorage("glossary") private var glossary = "CAN, CAN FD, ECU, i.MX95, i.MX8MP, R818, LVDS, HDMI, MCU"
     @AppStorage("readTranslations") private var readTranslations = false
     @AppStorage("speechRate") private var speechRate = 0.5
     @AppStorage("metaStreamingEnabled") private var metaStreamingEnabled = false
@@ -105,9 +104,6 @@ struct SettingsView: View {
                     if !checkResult.isEmpty { Text(checkResult).font(.footnote).textSelection(.enabled) }
                     Text("연결 테스트는 앱에 포함된 짧은 합성 중국어 음성을 Google로 보냅니다. 음성 인식 품질은 실제 회의에서 확인해야 합니다. 녹음한 음성은 선택한 Gemini 모델로 전송됩니다.").font(.footnote).foregroundStyle(.secondary)
                 }
-                Section {
-                    TextEditor(text: $glossary).frame(minHeight: 90).autocorrectionDisabled()
-                } header: { Text("기술 용어") } footer: { Text("부품 번호, 프로젝트 이름, CAN ID 등을 쉼표로 적으면 인식에 참고합니다. 최대 4,000자까지 사용합니다.") }
                 Section("녹음과 보관") {
                     Text("약 2초 단위로 전사하므로 표시까지 녹음 시간과 API 처리 시간이 필요합니다. 연결이 끊기면 음성을 보관하고 ‘다시 전사’로 이어갑니다.")
                     Text("화면을 잠가도 녹음하도록 구성했습니다. 통화나 오디오 장치 전환으로 생기는 공백은 회의 상태 기록에 남습니다.")

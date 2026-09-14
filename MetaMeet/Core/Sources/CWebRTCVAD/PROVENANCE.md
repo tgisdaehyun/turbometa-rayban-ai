@@ -1,0 +1,1 @@
+WebRTC VAD sources via https://github.com/wiseman/py-webrtcvad at e283ca41df3a84b0e87fb1f5cb9b21580a286b09. Original files unmodified. See MetaMeet/WebRTC-LICENSE.txt. MetaMeetVAD.c and include/MetaMeetVAD.h are the app adapter.

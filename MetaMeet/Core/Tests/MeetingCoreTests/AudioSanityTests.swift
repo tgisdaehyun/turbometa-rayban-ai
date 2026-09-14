@@ -11,6 +11,16 @@ final class AudioSanityTests: XCTestCase {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "mandarin", withExtension: "wav", subdirectory: "Fixtures"))
         XCTAssertTrue(try AudioSanity.hasSignal(Data(contentsOf: url)))
     }
+    func testNoiseOnlyIsRejectedBeforeTranscription() throws {
+        var state: UInt32 = 42; var pcm = Data()
+        for _ in 0..<32000 {
+            state = state &* 1664525 &+ 1013904223
+            let value = Int16(Int(state % 1001) - 500)
+            let bits = UInt16(bitPattern: value)
+            pcm.append(UInt8(bits & 255)); pcm.append(UInt8(bits >> 8))
+        }
+        XCTAssertFalse(try AudioSanity.hasSignal(WAV.header(byteCount: pcm.count) + pcm))
+    }
     func testMalformedWavIsNotSilentlyDiscarded() { XCTAssertThrowsError(try AudioSanity.hasSignal(Data(repeating: 0, count: 80))) }
     func testKoreanPlaybackDuplicateIsFilteredButChineseSpeechIsKept() {
         let spoken = ["우선 확인해 봅시다. CAN 메시지는 100밀리초마다 전송됩니다."]

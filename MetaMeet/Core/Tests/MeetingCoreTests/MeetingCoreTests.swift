@@ -40,7 +40,8 @@ extension MeetingCoreTests {
         XCTAssertEqual(inline["mimeType"], "audio/wav")
         XCTAssertEqual(inline["data"], WAV.header(byteCount: 0).base64EncodedString())
         XCTAssertNotNil((body["generationConfig"] as? [String: Any])?["responseSchema"])
-        XCTAssertTrue((parts.last?["text"] as? String)?.contains("0x643") == true)
+        XCTAssertEqual(parts.count, 1)
+        XCTAssertFalse(String(data: r.httpBody!, encoding: .utf8)!.contains("0x643"))
     }
     func testRejectsTruncatedModelResponse() {
         XCTAssertThrowsError(try GeminiClient.decode(Data(#"{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"{}"}]}}]}"#.utf8), duration: 15))

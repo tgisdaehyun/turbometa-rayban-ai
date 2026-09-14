@@ -24,6 +24,7 @@ targets:
       - App
       - Assets.xcassets
       - PrivacyInfo.xcprivacy
+      - WebRTC-LICENSE.txt
       - EmbeddedGeminiKey.txt
       - Core/Tests/MeetingCoreTests/Fixtures/mandarin.wav
     dependencies:

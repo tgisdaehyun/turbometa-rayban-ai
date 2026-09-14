@@ -1,4 +1,5 @@
 import Foundation
+import CWebRTCVAD
 
 public enum AudioSanity {
     /// Conservative PCM signal gate, not speech recognition. Keeps original WAVs untouched.
@@ -29,9 +30,13 @@ public enum AudioSanity {
                 energy += Double(value) * Double(value); peak = max(peak, abs(value)); count += 1
             }
             if count > 0 && sqrt(energy / Double(count)) >= 50 && peak >= 150 { activeFrames += count }
-            if activeFrames >= 960 { return true } // At least 60 ms above a deliberately low floor.
+
         }
-        return false
+        guard activeFrames >= 960 else { return false }
+        let pcm = stride(from: samples.lowerBound, to: samples.upperBound, by: 2).map { Int16(bitPattern: UInt16(u16($0))) }
+        let voice = pcm.withUnsafeBufferPointer { MetaMeetHasVoice($0.baseAddress, $0.count) }
+        guard voice >= 0 else { throw TranscriptError.invalidResponse }
+        return voice == 1
     }
     public static func isPlaybackEcho(original: String, spoken: [String]) -> Bool {
         guard original.unicodeScalars.contains(where: { (0xAC00...0xD7A3).contains($0.value) }) else { return false }

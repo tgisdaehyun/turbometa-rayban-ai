@@ -188,7 +188,7 @@ final class MeetingStore: ObservableObject {
                     var result: [Utterance] = []
                     for attempt in 0..<3 {
                         do {
-                            result = try await GeminiClient().transcribe(audio: audio, duration: chunk.duration, model: UserDefaults.standard.string(forKey: "geminiModel") ?? GeminiModels.defaultModel, key: key, glossary: UserDefaults.standard.string(forKey: "glossary") ?? "CAN, CAN FD, ECU, i.MX95, i.MX8MP, R818, LVDS, HDMI, MCU")
+                            result = try await GeminiClient().transcribe(audio: audio, duration: chunk.duration, model: UserDefaults.standard.string(forKey: "geminiModel") ?? GeminiModels.defaultModel, key: key, glossary: "")
                             break
                         } catch let failure as GeminiFailure where failure.retryable && attempt < 2 {
                             try await Task.sleep(nanoseconds: UInt64(2 << attempt) * 1_000_000_000)
