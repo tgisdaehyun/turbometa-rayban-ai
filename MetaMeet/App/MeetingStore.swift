@@ -19,7 +19,9 @@ final class MeetingStore: ObservableObject {
     @Published var isPreview = false
     let speaker = TranslationSpeaker()
     private var capture: AudioCapture?
-    private var worker: Task<Void, Never>?
+    private var workers: [Int: Task<Void, Never>] = [:]
+    private var spokenCursors: [UUID: Int] = [:]
+    @Published private(set) var lastAPISeconds: Double?
     private var queuePaused = false
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     let root: URL
@@ -110,6 +112,7 @@ final class MeetingStore: ObservableObject {
             try FileManager.default.createDirectory(at: folder(meeting.id), withIntermediateDirectories: true)
             try write(meeting)
         } catch { self.error = "녹음을 저장할 수 없습니다: \(error.localizedDescription)"; return }
+        spokenCursors[meeting.id] = 0
         meetings.insert(meeting, at: 0); selectedID = meeting.id; activeID = meeting.id; paused = false
         let recorder = AudioCapture(); capture = recorder
         recorder.onOpened = { [weak self] chunk in self?.edit(meeting.id) { $0.chunks.append(chunk) } }
@@ -157,23 +160,29 @@ final class MeetingStore: ObservableObject {
         } catch { self.error = "회의를 삭제하지 못했습니다." }
     }
     private func runQueue() {
-        guard worker == nil, !isPreview, !queuePaused else { return }
-        worker = Task { [weak self] in
+        guard !isPreview, !queuePaused else { return }
+        for slot in 0..<2 where workers[slot] == nil { startWorker(slot) }
+    }
+    private func startWorker(_ slot: Int) {
+        workers[slot] = Task { [weak self] in
             guard let self else { return }
             self.processing = true
-            self.backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish transcription") { [weak self] in
-                Task { @MainActor in self?.worker?.cancel() }
+            if self.backgroundTask == .invalid { self.backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish transcription") { [weak self] in
+                Task { @MainActor in self?.workers.values.forEach { $0.cancel() } }
+            }
             }
             defer {
-                self.processing = false; self.worker = nil
-                if self.backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(self.backgroundTask); self.backgroundTask = .invalid }
+                self.workers.removeValue(forKey: slot)
+                self.processing = !self.workers.isEmpty
+                if self.workers.isEmpty && self.backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(self.backgroundTask); self.backgroundTask = .invalid }
             }
-            while !Task.isCancelled {
+            while !Task.isCancelled && !self.queuePaused {
                 guard let meeting = self.meetings.first(where: { $0.chunks.contains { $0.state == .queued } }),
                       let chunk = meeting.chunks.first(where: { $0.state == .queued }) else { break }
                 let key = Keychain.read()
                 if key.isEmpty { self.error = "미전사 녹음이 있습니다. API 키를 저장한 뒤 다시 전사를 눌러 주세요."; break }
                 self.updateChunk(meeting.id, chunk.id) { $0.state = .processing; $0.error = nil }
+                let apiStarted = Date()
                 do {
                     let audio = try Data(contentsOf: self.folder(meeting.id).appendingPathComponent(chunk.filename))
                     var result: [Utterance] = []
@@ -186,10 +195,12 @@ final class MeetingStore: ObservableObject {
                         }
                     }
                     try Task.checkCancellation()
+                    let beforeFiltering = result.count
+                    result.removeAll { AudioSanity.isPlaybackEcho(original: $0.original, spoken: self.speaker.recentSpeech) }
+                    if result.count < beforeFiltering { self.event(meeting.id, "읽어준 한국어가 다시 입력된 것으로 보이는 문장을 제외했습니다. 원음은 보관돼 있습니다.") }
+                    self.lastAPISeconds = Date().timeIntervalSince(apiStarted)
                     self.updateChunk(meeting.id, chunk.id) { $0.utterances = result; $0.state = .complete; $0.error = nil }
-                    if self.activeID == meeting.id && Date().timeIntervalSince(meeting.created) - (chunk.start + chunk.duration) < 60 {
-                        for utterance in result { self.speaker.enqueue(utterance.korean) }
-                    }
+                    self.drainSpeech(meeting.id)
                 } catch is CancellationError {
                     self.updateChunk(meeting.id, chunk.id) { $0.state = .queued; $0.error = "앱을 다시 열어 전사를 이어갈 수 있습니다." }; break
                 } catch {
@@ -199,6 +210,18 @@ final class MeetingStore: ObservableObject {
                 }
             }
         }
+    }
+    private func drainSpeech(_ id: UUID) {
+        guard let meeting = meetings.first(where: { $0.id == id }), activeID == id else { return }
+        var cursor = spokenCursors[id] ?? 0
+        while let chunk = meeting.chunks.first(where: { $0.id == cursor }) {
+            guard chunk.state == .complete || chunk.state == .failed else { break }
+            if chunk.state == .complete && Date().timeIntervalSince(meeting.created) - (chunk.start + chunk.duration) < 30 {
+                for utterance in chunk.utterances { speaker.enqueue(utterance.korean) }
+            }
+            cursor += 1
+        }
+        spokenCursors[id] = cursor
     }
     private func updateChunk(_ meeting: UUID, _ chunk: Int, _ update: (inout AudioChunk) -> Void) {
         edit(meeting) { value in

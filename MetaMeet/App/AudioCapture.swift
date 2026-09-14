@@ -27,7 +27,7 @@ final class AudioCapture {
     private var nextOffset = 0.0
     private var failed = false
     private var levelCount = 0
-    private let chunkBytes = 15 * WAV.bytesPerSecond
+    private let chunkBytes = 2 * WAV.bytesPerSecond
 
     static func permission() async -> Bool {
         await withCheckedContinuation { continuation in

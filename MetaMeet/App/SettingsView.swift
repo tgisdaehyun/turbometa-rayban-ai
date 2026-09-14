@@ -71,7 +71,7 @@ struct SettingsView: View {
                 Section("번역 읽어주기") {
                     Toggle("Bluetooth 안경으로 한국어 읽기", isOn: $readTranslations).disabled(store.activeID != nil)
                     HStack { Text("읽기 속도"); Slider(value: $speechRate, in: 0.35...0.6, step: 0.05) }
-                    Text("회의 중 새 한국어 번역이 나오면 Bluetooth 오디오로 읽습니다. 음성은 iPhone의 한국어 음성을 사용합니다. 15초 단위 전사 지연은 그대로이며, 오래 밀린 번역은 읽지 않습니다. 에코 제거는 실제 안경에서 확인해야 합니다.").font(.footnote).foregroundStyle(.secondary)
+                    Text("회의 중 새 한국어 번역이 나오면 Bluetooth 오디오로 읽습니다. 음성은 iPhone의 한국어 음성을 사용합니다. 2초 단위 전사 지연은 그대로이며, 오래 밀린 번역은 읽지 않습니다. 에코 제거는 실제 안경에서 확인해야 합니다.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Gemini API") {
                     SecureField("API 키 변경 (선택)", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("apiKey")
@@ -109,7 +109,7 @@ struct SettingsView: View {
                     TextEditor(text: $glossary).frame(minHeight: 90).autocorrectionDisabled()
                 } header: { Text("기술 용어") } footer: { Text("부품 번호, 프로젝트 이름, CAN ID 등을 쉼표로 적으면 인식에 참고합니다. 최대 4,000자까지 사용합니다.") }
                 Section("녹음과 보관") {
-                    Text("약 15초 단위로 전사하므로 표시까지 녹음 시간과 API 처리 시간이 필요합니다. 연결이 끊기면 음성을 보관하고 ‘다시 전사’로 이어갑니다.")
+                    Text("약 2초 단위로 전사하므로 표시까지 녹음 시간과 API 처리 시간이 필요합니다. 연결이 끊기면 음성을 보관하고 ‘다시 전사’로 이어갑니다.")
                     Text("화면을 잠가도 녹음하도록 구성했습니다. 통화나 오디오 장치 전환으로 생기는 공백은 회의 상태 기록에 남습니다.")
                     Text("음성 WAV와 회의 JSON은 파일 앱 → 나의 iPhone → MetaMeet에서 찾을 수 있습니다. 회의를 삭제하기 전까지 보관합니다.")
                 }.font(.footnote).foregroundStyle(.secondary)

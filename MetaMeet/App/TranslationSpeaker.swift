@@ -7,6 +7,15 @@ final class TranslationSpeaker: NSObject, ObservableObject, AVSpeechSynthesizerD
     @Published private(set) var status = "읽어주기 꺼짐"
     private let synth = AVSpeechSynthesizer()
     private var pending: [String] = []
+    private var speechHistory: [(Date, String)] = []
+    var recentSpeech: [String] { speechHistory.filter { Date().timeIntervalSince($0.0) < 45 }.map(\.1) }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        let text = utterance.speechString
+        Task { @MainActor [weak self] in
+            self?.speechHistory.append((Date(), text))
+            if let self { self.speechHistory = Array(self.speechHistory.suffix(12)) }
+        }
+    }
     override init() {
         super.init(); synth.delegate = self; synth.usesApplicationAudioSession = true
     }
