@@ -4,6 +4,12 @@ import Security
 enum Keychain {
     private static let service = "com.rsnav.metameet.gemini"
     static func read() -> String {
+        let saved = storedKey()
+        if !saved.isEmpty { return saved }
+        guard let url = Bundle.main.url(forResource: "EmbeddedGeminiKey", withExtension: "txt") else { return "" }
+        return ((try? String(contentsOf: url, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    static func storedKey() -> String {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "api-key", kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return "" }

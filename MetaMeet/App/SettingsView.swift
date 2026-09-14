@@ -1,14 +1,23 @@
 import SwiftUI
+import MeetingCore
 
 struct SettingsView: View {
     @EnvironmentObject private var store: MeetingStore
+    @EnvironmentObject private var meta: MetaConnection
     @Environment(\.dismiss) private var dismiss
     @AppStorage("viewMode") private var viewMode = "korean"
     @AppStorage("translationFontSize") private var fontSize = 32.0
     @AppStorage("keepScreenAwake") private var keepAwake = true
     @AppStorage("preferGlasses") private var preferGlasses = true
-    @AppStorage("geminiModel") private var model = "gemini-2.5-flash"
+    @AppStorage("geminiModel") private var model = GeminiModels.defaultModel
     @AppStorage("glossary") private var glossary = "CAN, CAN FD, ECU, i.MX95, i.MX8MP, R818, LVDS, HDMI, MCU"
+    @AppStorage("metaStreamingEnabled") private var metaStreamingEnabled = false
+    @AppStorage("preferredInputUID") private var microphoneID = ""
+    @State private var microphones: [AudioCapture.Microphone] = []
+    @State private var models: [String] = []
+    @State private var checking = false
+    @State private var checkResult = ""
+    @State private var microphoneResult = ""
     @State private var key = ""
     @State private var saved = false
     var body: some View {
@@ -24,17 +33,62 @@ struct SettingsView: View {
                     Text("신호는 100밀리초마다 전송됩니다.").font(.system(size: CGFloat(fontSize))).padding(.vertical, 12)
                     Toggle("녹음 중 화면 켜 두기", isOn: $keepAwake)
                 } header: { Text("화면") } footer: { Text("한국어 크게 보기에서도 중국어 원문은 저장됩니다. 내보내기에는 원문과 번역이 모두 포함됩니다.") }
-                Section("마이크") {
+                Section("안경 · 마이크") {
+                    Text(meta.status).font(.footnote)
+                    Button(meta.connecting ? "Meta 앱 승인 대기 중" : "Meta 앱 연결 승인") { Task { await meta.connect() } }.disabled(meta.connecting || store.activeID != nil)
+                    if let error = meta.error { Text(error).font(.footnote).foregroundStyle(.orange) }
+                    Toggle("회의 중 Meta 스트리밍 연결", isOn: $metaStreamingEnabled).disabled(store.activeID != nil || meta.streamStarting)
+                    Text(meta.streamStatus).font(.footnote)
+                    Button(meta.streamActive ? "Meta 스트리밍 중지" : "Meta 스트리밍 시작 · 권한 요청") {
+                        Task { if meta.streamActive { meta.stopStreaming() } else { await meta.startStreaming() } }
+                    }.disabled(!meta.registered || meta.streamStarting)
+                    Text("Meta SDK 스트림은 카메라 권한을 요구하며 카메라가 켜질 수 있습니다. 영상은 표시·저장·전송하지 않고, 회의 음성은 Bluetooth 마이크로 받습니다. 장시간 회의에서는 이 옵션을 끄고 안경 마이크만 사용할 수도 있습니다.").font(.footnote).foregroundStyle(.secondary)
                     Toggle("Meta 안경 마이크 우선", isOn: $preferGlasses).disabled(store.activeID != nil)
-                    Text("Meta AI 앱에서 안경을 iPhone과 페어링해 주세요. Bluetooth 마이크를 선택하며, 사용할 수 없으면 iPhone 마이크로 녹음합니다. 실제 입력 장치는 회의 화면에 표시됩니다.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("Bluetooth 마이크 확인") {
+                        Task {
+                            do { microphones = try await AudioCapture.microphones(); microphoneResult = microphones.isEmpty ? "Bluetooth 마이크가 없습니다. 안경을 착용하고 연결 상태를 확인해 주세요." : "마이크를 선택해 주세요." }
+                            catch { microphoneResult = error.localizedDescription }
+                        }
+                    }.disabled(store.activeID != nil || store.starting)
+                    if !microphones.isEmpty {
+                        Picker("안경 마이크", selection: $microphoneID) {
+                            Text("이름으로 자동 선택").tag("")
+                            ForEach(microphones) { microphone in Text(microphone.name).tag(microphone.id) }
+                        }.disabled(store.activeID != nil)
+                    }
+                    if !microphoneResult.isEmpty { Text(microphoneResult).font(.footnote) }
+                    Text("Meta 앱에서 개발자 모드를 켜고 연결을 승인해 주세요. 마이크 사용은 iOS에서 별도로 허용합니다. 안경 입력이 없으면 iPhone 마이크로 자동 전환하며 실제 입력을 회의 화면에 표시합니다.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Gemini API") {
-                    SecureField("API 키", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("apiKey")
+                    SecureField("API 키 변경 (선택)", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("apiKey")
                     Button(saved ? "키 저장됨" : "키 저장") { store.saveSettings(key: key); saved = store.hasKey }
-                    TextField("모델 이름", text: $model).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(store.activeID != nil || store.processing)
-                    Text("키는 이 iPhone의 키체인에 저장합니다. 녹음한 음성을 Google Gemini로 전송해 중국어 전사와 한국어 번역을 만듭니다.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    Text(store.hasKey ? "API 키 준비됨 · 내장 키 또는 저장된 키 사용" : "API 키가 없습니다").font(.footnote)
+                    TextField("모델 이름", text: $model).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(store.activeID != nil || store.processing || checking)
+                    Button(checking ? "확인 중…" : "이 키의 모델 목록 불러오기") {
+                        Task {
+                            checking = true; defer { checking = false }
+                            do { models = try await GeminiModels.list(key: Keychain.read()); checkResult = "목록 조회 완료. 사용 한도와 음성 지원은 연결 테스트로 확인하세요." }
+                            catch { checkResult = error.localizedDescription }
+                        }
+                    }.disabled(checking || store.processing)
+                    if !models.isEmpty {
+                        Picker("모델 선택", selection: $model) {
+                            if !models.contains(model) { Text(model).tag(model) }
+                            ForEach(models, id: \.self) { Text($0).tag($0) }
+                        }.disabled(store.activeID != nil || store.processing || checking)
+                    }
+                    Button("음성 API 연결 테스트") {
+                        Task {
+                            checking = true; defer { checking = false }
+                            do {
+                                let audio = WAV.header(byteCount: WAV.bytesPerSecond) + Data(repeating: 0, count: WAV.bytesPerSecond)
+                                _ = try await GeminiClient().transcribe(audio: audio, duration: 1, model: model, key: Keychain.read(), glossary: "")
+                                checkResult = "연결 성공 · \(model) 음성 요청과 응답 형식 확인 완료"
+                            } catch { checkResult = error.localizedDescription }
+                        }
+                    }.disabled(checking || store.processing)
+                    if !checkResult.isEmpty { Text(checkResult).font(.footnote).textSelection(.enabled) }
+                    Text("연결 테스트는 짧은 무음 WAV를 Google로 보냅니다. 음성 인식 품질은 실제 회의에서 확인해야 합니다. 녹음한 음성은 선택한 Gemini 모델로 전송됩니다.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section {
                     TextEditor(text: $glossary).frame(minHeight: 90).autocorrectionDisabled()
@@ -48,7 +102,7 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden).background(.black)
             .navigationTitle("설정").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("완료") { dismiss() } } }
-            .onAppear { key = Keychain.read() }
+            .onAppear { key = Keychain.storedKey() }
         }.preferredColorScheme(.dark).tint(.white)
     }
 }

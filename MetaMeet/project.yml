@@ -6,11 +6,14 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '1.0.0'
-    CURRENT_PROJECT_VERSION: '1'
+    MARKETING_VERSION: '1.1.0'
+    CURRENT_PROJECT_VERSION: '2'
     TARGETED_DEVICE_FAMILY: '1,2'
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 packages:
+  MetaWearablesDAT:
+    url: https://github.com/facebook/meta-wearables-dat-ios
+    exactVersion: 0.8.0
   MeetingCore:
     path: Core
 targets:
@@ -21,8 +24,13 @@ targets:
       - App
       - Assets.xcassets
       - PrivacyInfo.xcprivacy
+      - EmbeddedGeminiKey.txt
     dependencies:
       - package: MeetingCore
+      - package: MetaWearablesDAT
+        product: MWDATCore
+      - package: MetaWearablesDAT
+        product: MWDATCamera
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rsnav.metameet
@@ -32,13 +40,27 @@ targets:
       properties:
         CFBundleDisplayName: MetaMeet
         NSMicrophoneUsageDescription: 'Meta 안경 또는 iPhone 마이크로 회의를 녹음하고 한국어로 번역합니다.'
-        UIBackgroundModes: [audio]
+        UIBackgroundModes: [audio, bluetooth-peripheral, external-accessory]
+        NSBluetoothAlwaysUsageDescription: 'Meta 안경 연결과 상태 확인에 Bluetooth를 사용합니다.'
+        UISupportedExternalAccessoryProtocols: [com.meta.ar.wearable]
+        LSApplicationQueriesSchemes: [fb-viewapp]
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: com.rsnav.metameet
+            CFBundleURLSchemes: [metameet]
+        MWDAT:
+          AppLinkURLScheme: 'metameet://'
+          MetaAppID: '0'
+          Analytics:
+            OptOut: true
+          CrashReporting:
+            OptOut: true
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen:
           UIColorName: LaunchBackground
         UIUserInterfaceStyle: Dark
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
 schemes:
   MetaMeet:
     build:

@@ -50,20 +50,30 @@ public struct GeminiClient: Sendable {
     }
     public func transcribe(audio: Data, duration: Double, model: String, key: String, glossary: String) async throws -> [Utterance] {
         let request = try Self.request(audio: audio, duration: duration, model: model, key: key, glossary: glossary)
+        let data = try await Self.send(request, key: key)
+        return try Self.decode(data, duration: duration)
+    }
+    static func send(_ request: URLRequest, key: String) async throws -> Data {
         let data: Data; let response: URLResponse
         do { (data, response) = try await URLSession.shared.data(for: request) }
         catch is CancellationError { throw CancellationError() }
         catch { if Task.isCancelled { throw CancellationError() }; throw GeminiFailure("네트워크 연결을 확인해 주세요. 녹음은 계속 보관됩니다.", retryable: true) }
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200...299).contains(code) else {
-            switch code {
-            case 400: throw GeminiFailure("요청 또는 모델 설정을 확인해 주세요. (API 400)")
-            case 401, 403: throw GeminiFailure("Gemini API 키와 사용 권한을 확인해 주세요. (API \(code))")
-            case 404: throw GeminiFailure("선택한 Gemini 모델을 사용할 수 없습니다. 설정에서 모델 이름을 변경해 주세요.")
-            case 429: throw GeminiFailure("Gemini 요청 한도에 도달했습니다. 잠시 후 다시 시도합니다.", retryable: true)
-            default: throw GeminiFailure("Gemini 응답 오류 (API \(code)). 녹음은 보관돼 있습니다.", retryable: code >= 500)
-            }
+        guard (200...299).contains(code) else { throw apiFailure(data: data, code: code, key: key) }
+        return data
+    }
+    public static func apiFailure(data: Data, code: Int, key: String) -> GeminiFailure {
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let raw = ((object?["error"] as? [String: Any])?["message"] as? String) ?? ""
+        let detail = String(raw.replacingOccurrences(of: key, with: "[키 숨김]").prefix(500))
+        let hint: String
+        switch code {
+        case 400: hint = "API 요청 또는 키·모델 설정을 확인해 주세요."
+        case 401, 403: hint = "Gemini API 키와 사용 권한을 확인해 주세요."
+        case 404: hint = "이 키로 사용할 수 없는 모델입니다. 설정에서 모델 목록을 새로 불러와 선택해 주세요."
+        case 429: hint = "Gemini 사용 한도 또는 결제 설정을 확인해 주세요."
+        default: hint = "Gemini 응답 오류입니다."
         }
-        return try Self.decode(data, duration: duration)
+        return GeminiFailure("\(hint) (API \(code))\n\(detail)", retryable: code == 429 || code >= 500)
     }
 }

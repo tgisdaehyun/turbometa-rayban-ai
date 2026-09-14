@@ -4,6 +4,9 @@ import MeetingCore
 
 struct MeetingView: View {
     @EnvironmentObject private var store: MeetingStore
+    @EnvironmentObject private var meta: MetaConnection
+    @AppStorage("metaStreamingEnabled") private var metaStreamingEnabled = false
+    @AppStorage("preferGlasses") private var preferGlasses = true
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("viewMode") private var viewMode = "korean"
     @AppStorage("translationFontSize") private var fontSize = 32.0
@@ -17,6 +20,11 @@ struct MeetingView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 statusBar
+                if preferGlasses && !meta.registered {
+                    Button { Task { await meta.connect() } } label: {
+                        Label(meta.connecting ? "Meta 앱 승인 대기 중" : "Meta 앱에서 안경 연결", systemImage: "eyeglasses")
+                    }.disabled(meta.connecting).font(.subheadline).padding(.bottom, 12)
+                }
                 if let meeting = store.selected, !meeting.chunks.flatMap(\.utterances).isEmpty {
                     transcript(meeting)
                 } else {
@@ -51,10 +59,11 @@ struct MeetingView: View {
                     Button { settings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("설정")
                 }
             }
-            .sheet(isPresented: $settings) { SettingsView().environmentObject(store) }
+            .sheet(isPresented: $settings) { SettingsView().environmentObject(store).environmentObject(meta) }
             .sheet(isPresented: $history) { HistoryView().environmentObject(store) }
             .sheet(item: $export) { ActivityView(items: [$0.url]) }
             .alert("확인이 필요합니다", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) { Button("확인") { store.error = nil } } message: { Text(store.error ?? "") }
+            .onChange(of: meta.error) { _, message in if let message { store.error = message; meta.error = nil } }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { store.foreground() }
                 UIApplication.shared.isIdleTimerDisabled = phase == .active && keepAwake && store.activeID != nil
@@ -117,9 +126,12 @@ struct MeetingView: View {
         VStack(spacing: 12) {
             if store.paused { Button("녹음 재개") { store.resume() }.font(.body.bold()).padding(.bottom, 6) }
             Button {
-                if store.activeID != nil { store.stop() }
+                if store.activeID != nil { store.stop(); meta.stopStreaming() }
                 else if !store.hasKey { settings = true }
-                else { Task { await store.start() } }
+                else { Task {
+                    if metaStreamingEnabled && meta.registered { await meta.startStreaming() }
+                    await store.start()
+                } }
             } label: {
                 HStack(spacing: 10) {
                     if store.starting { ProgressView().tint(.black) }
@@ -127,7 +139,7 @@ struct MeetingView: View {
                     Text(store.starting ? "마이크 연결 중" : (store.activeID == nil ? "회의 시작" : "회의 종료"))
                 }.font(.system(size: 18, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 58)
                     .foregroundStyle(.black).background(.white, in: RoundedRectangle(cornerRadius: 14))
-            }.disabled(store.starting || store.isPreview).accessibilityIdentifier("recordButton")
+            }.disabled(store.starting || meta.streamStarting || store.isPreview).accessibilityIdentifier("recordButton")
             Text(store.activeID != nil ? "음성은 iPhone에 저장 · 번역은 순서대로 표시" : "중국어 원문과 한국어 번역을 함께 보관합니다")
                 .font(.caption2).foregroundStyle(.secondary)
         }.padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 14).background(.black)

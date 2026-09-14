@@ -31,8 +31,17 @@ final class AudioCapture {
 
     static func permission() async -> Bool {
         await withCheckedContinuation { continuation in
-            AVAudioSession.sharedInstance().requestRecordPermission { continuation.resume(returning: $0) }
+            AVAudioApplication.requestRecordPermission { continuation.resume(returning: $0) }
         }
+    }
+    struct Microphone: Identifiable { let id: String; let name: String }
+    static func microphones() async throws -> [Microphone] {
+        guard await permission() else { throw NSError(domain: "MetaMeet.Audio", code: 5, userInfo: [NSLocalizedDescriptionKey: "iPhone 설정에서 마이크 권한을 허용해 주세요."]) }
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .defaultToSpeaker])
+        try session.setActive(true)
+        defer { try? session.setActive(false, options: .notifyOthersOnDeactivation) }
+        return (session.availableInputs ?? []).filter { $0.portType == .bluetoothHFP }.map { Microphone(id: $0.uid, name: $0.portName) }
     }
     func start(directory: URL, preferGlasses: Bool) throws {
         precondition(Thread.isMainThread)
@@ -65,7 +74,7 @@ final class AudioCapture {
         stopEngine()
         io.sync { finishChunk(); nextOffset = Date().timeIntervalSince(began) }
         let session = AVAudioSession.sharedInstance()
-        // HFP is the same Bluetooth microphone route used in MetaRec. No camera/DAT session is needed for audio alone.
+        // Meta registration and iOS HFP routing are separate. Confirm the actual microphone before writing audio.
         try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .defaultToSpeaker])
         try session.setPreferredSampleRate(16000)
         try session.setActive(true)
@@ -74,9 +83,14 @@ final class AudioCapture {
             let name = input.portName.lowercased()
             return input.portType == .bluetoothHFP && ["ray-ban", "rayban", "meta", "oakley"].contains { name.contains($0) }
         }
-        let preferred = preferGlasses ? named ?? inputs.first(where: { $0.portType == .bluetoothHFP }) : inputs.first(where: { $0.portType == .builtInMic })
+        let chosenUID = UserDefaults.standard.string(forKey: "preferredInputUID") ?? ""
+        let explicit = inputs.first { $0.uid == chosenUID && $0.portType == .bluetoothHFP }
+        let phone = inputs.first(where: { $0.portType == .builtInMic })
+        var preferred = preferGlasses ? (explicit ?? named ?? phone) : phone
+        guard preferred != nil else { throw NSError(domain: "MetaMeet.Audio", code: 3, userInfo: [NSLocalizedDescriptionKey: "사용 가능한 마이크가 없습니다."]) }
         do { try session.setPreferredInput(preferred) }
-        catch { try session.setPreferredInput(inputs.first(where: { $0.portType == .builtInMic })); onEvent?("안경 마이크 선택 실패: iPhone 마이크로 전환했습니다.") }
+        catch { preferred = phone; try session.setPreferredInput(phone) }
+        if preferGlasses && preferred?.portType != .bluetoothHFP { onEvent?("안경 마이크를 사용할 수 없어 iPhone 마이크로 녹음합니다.") }
         let engine = AVAudioEngine()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -100,6 +114,7 @@ final class AudioCapture {
         engine.prepare(); try engine.start()
         // Report the actual current route, not the preferred route or merely a Bluetooth connection.
         let actual = session.currentRoute.inputs.first
+        if preferGlasses && actual?.portType != .bluetoothHFP { onEvent?("실제 입력: iPhone 마이크 (안경 폴백)") }
         onRoute?(actual?.portName ?? "마이크 확인 중", actual?.portType == .bluetoothHFP)
     }
     private func consume(_ buffer: AVAudioPCMBuffer, converter: AVAudioConverter, target: AVAudioFormat) {
