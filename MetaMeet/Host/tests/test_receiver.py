@@ -42,6 +42,14 @@ class ReceiverTests(unittest.TestCase):
         folder = Path(self.tmp.name) / self.payload['meeting']['id']
         self.assertEqual(len(list(folder.glob('*.wav'))), 1)
         self.assertEqual(len(json.loads((folder / 'receipt.json').read_text())['received']), 1)
+    def test_deleted_meeting_is_not_recreated_by_mobile_retry(self):
+        (Path(self.tmp.name)/'.deleted-meetings.json').write_text(json.dumps([self.payload['meeting']['id']]))
+        store = Store(self.tmp.name)
+        self.assertEqual(store.accept(*encode(self.payload)), 0)
+        self.assertFalse((Path(self.tmp.name)/self.payload['meeting']['id']).exists())
+        new = fixture()
+        self.assertEqual(store.accept(*encode(new)), 1)
+        self.assertTrue((Path(self.tmp.name)/new['meeting']['id']/'receipt.json').exists())
     def test_rejects_corruption_traversal_and_bad_timing(self):
         for change in ['sha', 'path', 'duration', 'nan', 'id']:
             p = copy.deepcopy(self.payload)

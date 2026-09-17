@@ -89,12 +89,18 @@ class Store:
     def __init__(self, root):
         self.root = Path(root); self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
+        deleted_path = self.root / '.deleted-meetings.json'
+        self.deleted = set(json.loads(deleted_path.read_text())) if deleted_path.exists() else set()
 
     def accept(self, body, digest):
         if not hmac.compare_digest(hashlib.sha256(body).hexdigest(), digest):
             raise ValueError('batch checksum mismatch')
         payload = json.loads(body); meeting, audio = validate(payload)
         with self.lock:
+            if meeting['id'] in self.deleted:
+                # Retire an already queued mobile upload without recreating user-deleted data.
+                print(json.dumps({'event': 'discarded_deleted_meeting'}), flush=True)
+                return 0
             folder = self.root / meeting['id']; folder.mkdir(exist_ok=True)
             state_path = folder / 'receipt.json'
             state = json.loads(state_path.read_text()) if state_path.exists() else {'revision': -1, 'received': {}}
