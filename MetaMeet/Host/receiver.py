@@ -135,12 +135,35 @@ class Server(ThreadingHTTPServer):
         self.store = store; self.token = token; self.key_file = key_file
         super().__init__(address, Handler)
 
+    def get_request(self):
+        connection, address = super().get_request()
+        print(json.dumps({'event': 'connection', 'peer': address[0]}), flush=True)
+        return connection, address
+
+    def handle_error(self, request, client_address):
+        # Never print request data or credentials in tracebacks.
+        print(json.dumps({'event': 'connection_failed', 'peer': client_address[0]}), flush=True)
+
 
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
-        super().setup(); self.connection.settimeout(45)
+        self.request.settimeout(45)
+        if isinstance(self.request, ssl.SSLSocket):
+            try:
+                self.request.do_handshake()
+            except (ssl.SSLError, OSError) as error:
+                print(json.dumps({'event': 'tls_failed', 'peer': self.client_address[0],
+                                  'error_type': type(error).__name__,
+                                  'reason': getattr(error, 'reason', None)}), flush=True)
+                raise
+        super().setup()
     def log_message(self, fmt, *args): pass  # No credentials, query strings or meeting titles in logs.
     def reply(self, code, obj, digest=None):
+        route = ('health' if self.path == '/v1/health' else
+                 'translation-key' if self.path == '/v1/translation-key' else
+                 'batch' if self.path.startswith('/v1/batches/') else 'other')
+        print(json.dumps({'event': 'response', 'peer': self.client_address[0],
+                          'route': route, 'status': code}), flush=True)
         body = json.dumps(obj).encode()
         self.send_response(code); self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body))); self.send_header('Cache-Control', 'no-store')
@@ -205,7 +228,7 @@ def main():
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(config['certificate'], config['private_key'])
-    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    server.socket = tls.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
     server.serve_forever()
 
 if __name__ == '__main__': main()

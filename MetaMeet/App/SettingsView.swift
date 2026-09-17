@@ -51,6 +51,9 @@ struct SettingsView: View {
                             hostSync.retry()
                         } catch { store.error = error.localizedDescription }
                     }
+                    Button(hostSync.checkingConnection ? "호스트 연결 확인 중" : "호스트 연결 확인") { Task { await hostSync.checkConnection() } }
+                        .disabled(hostSync.checkingConnection)
+                    Text(hostSync.connectionStatus).font(.caption).textSelection(.enabled)
                     Button("호스트에서 한국어 번역 사용") { Task { await hostSync.configureTranslation() } }
                     Text("이 버튼을 누르면 앱의 Gemini 키를 지정된 호스트에 암호화 연결로 저장합니다. 사후 번역에는 텍스트만 Google로 전송합니다.").font(.caption).foregroundStyle(.secondary)
                     Text(hostSync.status).font(.caption)

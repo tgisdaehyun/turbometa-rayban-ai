@@ -9,6 +9,8 @@ final class HostSync: NSObject, ObservableObject, URLSessionTaskDelegate {
     static let shared = HostSync()
     nonisolated static let sessionID = "com.rsnav.metameet.host-upload.v1"
     @Published private(set) var status = "자동 백업 꺼짐"
+    @Published private(set) var connectionStatus = "호스트 연결 확인 전"
+    @Published private(set) var checkingConnection = false
     @Published private(set) var acknowledged: [UUID: Int] = [:]
     @Published private(set) var completed: Set<UUID> = []
     var source: (() -> (URL, [Meeting]))?
@@ -66,6 +68,45 @@ final class HostSync: NSObject, ObservableObject, URLSessionTaskDelegate {
             UserDefaults.standard.set(true, forKey: "hostPrivateBuildConfigured")
         } catch { status = "호스트 연결 키 저장 실패" }
     }
+    func checkConnection() async {
+        guard !checkingConnection else { return }
+        guard let base = endpoint, !Keychain.readHostToken().isEmpty else {
+            connectionStatus = "호스트 주소와 연결 키를 먼저 저장해 주세요"; return
+        }
+        checkingConnection = true; connectionStatus = "호스트 연결 확인 중"
+        defer { checkingConnection = false }
+        var request = URLRequest(url: base.appendingPathComponent("v1/health"))
+        request.timeoutInterval = 15
+        request.setValue("Bearer " + Keychain.readHostToken(), forHTTPHeaderField: "Authorization")
+        let config = URLSessionConfiguration.ephemeral
+        config.waitsForConnectivity = false
+        let client = URLSession(configuration: config, delegate: HostTLSDelegate(), delegateQueue: nil)
+        defer { client.finishTasksAndInvalidate() }
+        do {
+            let (_, response) = try await client.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            connectionStatus = code == 200 ? "호스트 연결·인증 확인 완료" : Self.responseMessage(code)
+        } catch { connectionStatus = Self.connectionError(error) }
+    }
+    nonisolated private static func responseMessage(_ code: Int) -> String {
+        if code == 401 { return "호스트 연결 키가 맞지 않습니다 (HTTP 401)" }
+        return "호스트 응답 확인 필요 (HTTP \(code))"
+    }
+    nonisolated private static func connectionError(_ error: Error) -> String {
+        let e = error as NSError
+        let reason: String
+        if e.domain == NSURLErrorDomain {
+            switch e.code {
+            case -1206 ... -1200: reason = "호스트 인증서 연결 실패"
+            case -1009: reason = "네트워크 연결 또는 앱의 네트워크 권한 확인 필요"
+            case -1001: reason = "호스트 응답 시간 초과"
+            case -1004, -1003: reason = "호스트 주소 또는 Tailscale 연결 확인 필요"
+            case -999: reason = "전송이 취소됨 · 다시 시도해 주세요"
+            default: reason = "호스트 연결 실패"
+            }
+        } else { reason = "호스트 연결 실패" }
+        return "\(reason) (\(e.domain) \(e.code))"
+    }
     func configureTranslation() async {
         guard let base = endpoint, !Keychain.readHostToken().isEmpty, !Keychain.read().isEmpty else {
             status = "호스트 연결 키와 Gemini 키를 먼저 저장해 주세요"; return
@@ -78,9 +119,10 @@ final class HostSync: NSObject, ObservableObject, URLSessionTaskDelegate {
         defer { client.finishTasksAndInvalidate() }
         do {
             let (_, response) = try await client.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else { status = Self.responseMessage(code); connectionStatus = status; return }
             status = "호스트 한국어 번역 설정 완료"
-        } catch { status = "번역 키 설정 실패 · Tailscale 연결을 확인해 주세요" }
+        } catch { status = Self.connectionError(error); connectionStatus = status }
     }
     func start() {
         guard timer == nil else { return }
@@ -146,7 +188,7 @@ final class HostSync: NSObject, ObservableObject, URLSessionTaskDelegate {
                 try save(next, "job.json"); job = next
                 try send(next); return
             }
-            status = "호스트 수신 확인됨 · 녹음 중에는 약 1분씩 전송"
+            status = completed.isEmpty ? "전송할 녹음 대기 · 녹음 중에는 약 1분씩 전송" : "호스트 수신 확인됨 · 녹음 중에는 약 1분씩 전송"
         } catch { status = "백업 준비 실패 · 원음 보관 중"; retryAfter = Date().addingTimeInterval(30) }
     }
     private func send(_ job: Job) throws {
@@ -168,16 +210,18 @@ final class HostSync: NSObject, ObservableObject, URLSessionTaskDelegate {
         let code = response?.statusCode
         let digest = response?.value(forHTTPHeaderField: "X-Content-SHA256")
         let taskDigest = task.taskDescription
-        let failed = error != nil
-        Task { @MainActor in self.finished(taskDigest: taskDigest, code: code, digest: digest, failed: failed) }
+        let failure = error.map { Self.connectionError($0) }
+        Task { @MainActor in self.finished(taskDigest: taskDigest, code: code, digest: digest, failure: failure) }
     }
-    private func finished(taskDigest: String?, code: Int?, digest: String?, failed: Bool) {
+    private func finished(taskDigest: String?, code: Int?, digest: String?, failure: String?) {
         guard let job, taskDigest == job.digest else { busy = false; return }
         busy = false
-        guard !failed, code == 200, digest == job.digest else {
+        guard failure == nil, code == 200, digest == job.digest else {
             failures += 1; retryAfter = Date().addingTimeInterval(min(300, pow(2, Double(min(failures, 8))) * 5))
             blocked = [400, 401, 403, 409, 413].contains(code ?? 0)
-            status = blocked ? "백업 설정·파일 확인 필요 (\(code ?? 0)) · 원음 보관됨" : "연결 대기 · 원음 보관 중, 자동 재시도"
+            let detail = failure ?? Self.responseMessage(code ?? 0)
+            connectionStatus = detail
+            status = detail + (blocked ? " · 설정 확인 후 재시도" : " · 원음 보관 중, 자동 재시도")
             return
         }
         do {
@@ -198,6 +242,9 @@ final class HostSync: NSObject, ObservableObject, URLSessionTaskDelegate {
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
     }
+    nonisolated func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        HostTLSDelegate.validate(challenge, completionHandler: completionHandler)
+    }
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         HostTLSDelegate.validate(challenge, completionHandler: completionHandler)
     }
@@ -213,6 +260,9 @@ final class HostUploadAppDelegate: NSObject, UIApplicationDelegate {
 }
 
 final class HostTLSDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        Self.validate(challenge, completionHandler: completionHandler)
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         Self.validate(challenge, completionHandler: completionHandler)
     }
