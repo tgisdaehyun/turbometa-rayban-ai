@@ -52,3 +52,8 @@ android/local.properties
 # OpenClaw reference (not part of this project)
 openclaw-ref/
 Logboard-fix/
+
+# Local Python state and private app configuration
+__pycache__/
+*.pyc
+MetaMeet/EmbeddedHostConfig.json

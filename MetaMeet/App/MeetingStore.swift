@@ -42,7 +42,12 @@ final class MeetingStore: ObservableObject {
             chunk.utterances = [Utterance(start: 1, end: 5, speaker: "화자 A", original: "我们先确认一下 CAN 报文的周期。", korean: "먼저 CAN 메시지의 전송 주기를 확인하겠습니다."), Utterance(start: 7, end: 12, speaker: "화자 B", original: "这个信号每一百毫秒发送一次。", korean: "이 신호는 100밀리초마다 한 번 전송됩니다.")]
             meeting.chunks = [chunk]; meeting.ended = Date(); meetings = [meeting]; selectedID = meeting.id
             inputName = "Ray-Ban Meta · 미리보기"; bluetooth = true
-        } else { load() }
+        } else {
+            load()
+            HostSync.shared.source = { [weak self] in (self?.root ?? documents, self?.meetings ?? []) }
+            HostSync.shared.configurePrivateBuild()
+            HostSync.shared.start()
+        }
     }
     func folder(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
     private func load() {
@@ -130,7 +135,10 @@ final class MeetingStore: ObservableObject {
         }
         recorder.onLevel = { [weak self] level in self?.level = level }
         recorder.onEvent = { [weak self] message in self?.event(meeting.id, message) }
-        recorder.onPaused = { [weak self] paused in self?.paused = paused }
+        recorder.onPaused = { [weak self] paused in
+            if paused && self?.paused == false { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
+            self?.paused = paused
+        }
         recorder.onFailure = { [weak self] message in self?.error = message; self?.event(meeting.id, message); self?.stop() }
         do { try recorder.start(directory: folder(meeting.id), preferGlasses: UserDefaults.standard.object(forKey: "preferGlasses") as? Bool ?? true) }
         catch { self.error = error.localizedDescription; stop() }
@@ -228,5 +236,5 @@ final class MeetingStore: ObservableObject {
             guard let i = value.chunks.firstIndex(where: { $0.id == chunk }) else { return }; update(&value.chunks[i])
         }
     }
-    func foreground() { if activeID != nil { runQueue() } }
+    func foreground() { capture?.foreground(); HostSync.shared.refresh(); if activeID != nil { runQueue() } }
 }

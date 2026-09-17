@@ -5,7 +5,7 @@ import MeetingCore
 struct MeetingView: View {
     @EnvironmentObject private var store: MeetingStore
     @EnvironmentObject private var meta: MetaConnection
-    @AppStorage("transcriptionPace") private var transcriptionPace = "fast"
+    @AppStorage("transcriptionPace") private var transcriptionPace = "slow"
     @AppStorage("readTranslations") private var readTranslations = false
     @AppStorage("metaStreamingEnabled") private var metaStreamingEnabled = false
     @AppStorage("preferGlasses") private var preferGlasses = true
@@ -13,6 +13,7 @@ struct MeetingView: View {
     @AppStorage("viewMode") private var viewMode = "korean"
     @AppStorage("translationFontSize") private var fontSize = 32.0
     @AppStorage("keepScreenAwake") private var keepAwake = true
+    @ObservedObject private var hostSync = HostSync.shared
     @State private var settings = false
     @State private var history = false
     @State private var follow = true
@@ -51,6 +52,12 @@ struct MeetingView: View {
                     Text("\(TranscriptionPace.saved(transcriptionPace).title) 모드 · 전사 중").font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 24)
                 }
                 if readTranslations { SpeechStatusView(speaker: store.speaker).padding(.horizontal, 24) }
+                if let meeting = store.selected, UserDefaults.standard.bool(forKey: "hostSyncEnabled") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(hostSync.completed.contains(meeting.id) ? "호스트 수신 완료 · 현재 저장된 원음" : "호스트 수신 \(hostSync.acknowledged[meeting.id] ?? 0)/\(meeting.chunks.filter { $0.state != .recording && $0.duration > 0 }.count)개")
+                        Text(hostSync.status).foregroundStyle(.secondary)
+                    }.font(.caption2).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24)
+                }
                 controls
             }
             .background(Color.black.ignoresSafeArea())
@@ -133,7 +140,12 @@ struct MeetingView: View {
     }
     private var controls: some View {
         VStack(spacing: 12) {
-            if store.paused { Button("녹음 재개") { store.resume() }.font(.body.bold()).padding(.bottom, 6) }
+            if store.paused {
+                VStack(spacing: 8) {
+                    Text("녹음이 중단됐습니다 · 이 구간은 저장되지 않습니다").font(.caption.bold()).foregroundStyle(.orange)
+                    Button("녹음 재개") { store.resume() }.font(.body.bold())
+                }.padding(.bottom, 6)
+            }
             Button {
                 if store.activeID != nil { store.stop(); meta.stopStreaming() }
                 else if !store.hasKey { settings = true }

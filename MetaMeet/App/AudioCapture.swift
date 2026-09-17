@@ -16,6 +16,12 @@ final class AudioCapture {
     private var observers: [NSObjectProtocol] = []
     private var recording = false
     private var suspended = false
+    private var recovery = AudioRecoveryPolicy()
+    private var recoveryTimer: Timer?
+    private var watchdog: Timer?
+    // Accessed only on io. Generation fences callbacks from an old audio engine.
+    private var writerGeneration = 0
+    private var lastPCMAt = Date()
     private var preferGlasses = true
     private var directory: URL!
     private var began = Date()
@@ -27,7 +33,7 @@ final class AudioCapture {
     private var nextOffset = 0.0
     private var failed = false
     private var levelCount = 0
-    private var chunkBytes = 2 * WAV.bytesPerSecond
+    private var chunkBytes = 15 * WAV.bytesPerSecond
 
     static func permission() async -> Bool {
         await withCheckedContinuation { continuation in
@@ -50,30 +56,62 @@ final class AudioCapture {
         let pace = TranscriptionPace.saved(UserDefaults.standard.string(forKey: "transcriptionPace"))
         io.sync { chunkBytes = pace.seconds * WAV.bytesPerSecond; chunkID = 0; nextOffset = 0; failed = false; byteCount = 0 }
         recording = true
+        recovery = AudioRecoveryPolicy()
         observe()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self, self.recording, !self.suspended, self.recoveryTimer == nil else { return }
+            let stalled = self.io.sync { Date().timeIntervalSince(self.lastPCMAt) > 6 }
+            if stalled {
+                self.onEvent?("6초 동안 오디오 입력이 없어 마이크를 다시 연결합니다.")
+                self.resume()
+            }
+        }
         do { try configureAndStart() }
         catch { stop(); throw error }
     }
     func stop() {
         precondition(Thread.isMainThread)
         recording = false; suspended = false
+        recoveryTimer?.invalidate(); recoveryTimer = nil
+        watchdog?.invalidate(); watchdog = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }; observers.removeAll()
         stopEngine()
         io.sync { finishChunk() }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
+    func foreground() {
+        guard recording, suspended, !recovery.interrupted else { return }
+        recovery.succeeded(); resume()
+    }
     func resume() {
-        guard recording else { return }
-        do { try configureAndStart(); suspended = false; onPaused?(false); onEvent?("녹음을 다시 시작했습니다.") }
-        catch { suspended = true; onPaused?(true); onEvent?("마이크를 다시 열지 못했습니다. 재개 버튼을 눌러 주세요.") }
+        guard recording, !recovery.interrupted else { return }
+        recoveryTimer?.invalidate(); recoveryTimer = nil
+        do {
+            try configureAndStart(); suspended = false; recovery.succeeded()
+            onPaused?(false); onEvent?("녹음을 다시 시작했습니다.")
+        } catch {
+            stopEngine(); suspended = true; onPaused?(true)
+            if let delay = recovery.nextDelay() {
+                onEvent?("마이크 연결 실패 · \(Int(delay))초 후 자동 재시도합니다.")
+                recoveryTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+                    self?.recoveryTimer = nil; self?.resume()
+                }
+            } else {
+                onEvent?("마이크 자동 복구에 실패했습니다. 녹음 재개 버튼을 눌러 주세요.")
+            }
+        }
     }
     private func stopEngine() {
         if let engine { engine.stop(); engine.inputNode.removeTap(onBus: 0) }
         engine = nil
+        io.sync { writerGeneration += 1 }
     }
     private func configureAndStart() throws {
         stopEngine()
-        io.sync { finishChunk(); nextOffset = Date().timeIntervalSince(began) }
+        let generation = io.sync { () -> Int in
+            finishChunk(); nextOffset = Date().timeIntervalSince(began); lastPCMAt = Date()
+            return writerGeneration
+        }
         let session = AVAudioSession.sharedInstance()
         // Meta registration and iOS HFP routing are separate. Confirm the actual microphone before writing audio.
         try session.setCategory(.playAndRecord, mode: UserDefaults.standard.bool(forKey: "readTranslations") ? .voiceChat : .default, options: [.allowBluetooth, .defaultToSpeaker])
@@ -113,7 +151,7 @@ final class AudioCapture {
             for i in 0..<source.count {
                 if let src = source[i].mData, let dst = destination[i].mData { memcpy(dst, src, Int(source[i].mDataByteSize)) }
             }
-            self.io.async { [weak self] in self?.consume(owned, converter: converter, target: target) }
+            self.io.async { [weak self] in self?.consume(owned, converter: converter, target: target, generation: generation) }
         }
         self.engine = engine
         engine.prepare(); try engine.start()
@@ -122,8 +160,8 @@ final class AudioCapture {
         if preferGlasses && actual?.portType != .bluetoothHFP { onEvent?("실제 입력: iPhone 마이크 (안경 폴백)") }
         onRoute?(actual?.portName ?? "마이크 확인 중", actual?.portType == .bluetoothHFP)
     }
-    private func consume(_ buffer: AVAudioPCMBuffer, converter: AVAudioConverter, target: AVAudioFormat) {
-        guard !failed else { return }
+    private func consume(_ buffer: AVAudioPCMBuffer, converter: AVAudioConverter, target: AVAudioFormat, generation: Int) {
+        guard !failed, generation == writerGeneration else { return }
         let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * 16000 / buffer.format.sampleRate)) + 32
         guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
         var supplied = false
@@ -134,6 +172,7 @@ final class AudioCapture {
         }
         if status == .error { fail(error?.localizedDescription ?? "오디오 변환 실패"); return }
         guard output.frameLength > 0, let pointer = output.int16ChannelData?[0] else { return }
+        lastPCMAt = Date()
         let count = Int(output.frameLength)
         levelCount += 1
         if levelCount % 4 == 0 {
@@ -195,17 +234,18 @@ final class AudioCapture {
                   let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
             if type == .began {
+                self.recovery.interruptionBegan()
+                self.recoveryTimer?.invalidate(); self.recoveryTimer = nil
                 self.suspended = true; self.stopEngine(); self.io.sync { self.finishChunk() }
                 self.onPaused?(true); self.onEvent?("통화 또는 다른 앱으로 녹음이 중단됐습니다. 이 구간은 녹음되지 않습니다.")
             } else {
-                let options = AVAudioSession.InterruptionOptions(rawValue: notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
-                if options.contains(.shouldResume) { self.resume() }
-                else { self.onEvent?("오디오 중단이 끝났습니다. 재개 버튼을 눌러 주세요.") }
+                // The user still requested recording; retry only AFTER the interruption ends.
+                self.recovery.interruptionEnded(); self.resume()
             }
         })
         observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self, self.recording else { return }; self.onEvent?("오디오 서비스가 재시작되어 마이크를 다시 연결합니다."); self.resume()
         })
     }
-    deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
+    deinit { recoveryTimer?.invalidate(); watchdog?.invalidate(); observers.forEach { NotificationCenter.default.removeObserver($0) } }
 }

@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '1.1.1'
-    CURRENT_PROJECT_VERSION: '3'
+    MARKETING_VERSION: '1.2.0'
+    CURRENT_PROJECT_VERSION: '4'
     TARGETED_DEVICE_FAMILY: '1,2'
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 packages:
@@ -26,6 +26,8 @@ targets:
       - PrivacyInfo.xcprivacy
       - WebRTC-LICENSE.txt
       - EmbeddedGeminiKey.txt
+      - HostCertificate.der
+      - EmbeddedHostConfig.json
       - Core/Tests/MeetingCoreTests/Fixtures/mandarin.wav
     dependencies:
       - package: MeetingCore

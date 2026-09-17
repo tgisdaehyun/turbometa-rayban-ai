@@ -26,5 +26,22 @@ enum Keychain {
             if status != errSecSuccess { throw failure(status) }
         } else if result != errSecSuccess { throw failure(result) }
     }
+    static func readHostToken() -> String {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.rsnav.metameet.host", kSecAttrAccount as String: "token", kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+    static func saveHostToken(_ value: String) throws {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.rsnav.metameet.host", kSecAttrAccount as String: "token"]
+        let token = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.count >= 32 else { throw failure(errSecParam) }
+        let attrs: [String: Any] = [kSecValueData as String: Data(token.utf8), kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let result = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
+        if result == errSecItemNotFound {
+            let status = SecItemAdd(query.merging(attrs) { _, new in new } as CFDictionary, nil)
+            if status != errSecSuccess { throw failure(status) }
+        } else if result != errSecSuccess { throw failure(result) }
+    }
     private static func failure(_ code: OSStatus) -> NSError { NSError(domain: "MetaMeet.Keychain", code: Int(code), userInfo: [NSLocalizedDescriptionKey: "API 키를 안전하게 저장하지 못했습니다. (\(code))"]) }
 }

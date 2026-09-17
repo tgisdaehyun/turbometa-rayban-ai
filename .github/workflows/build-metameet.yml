@@ -1,7 +1,7 @@
 name: Build MetaMeet
 on:
   push:
-    branches: ['feat/metameet-transcription']
+    branches: ['feat/metameet-transcription', 'feat/metameet-trip-reliability']
     paths: ['MetaMeet/**', '.github/workflows/build-metameet.yml']
   workflow_dispatch:
 permissions:
@@ -22,7 +22,11 @@ jobs:
           done
           xcodebuild -version
       - name: Prepare local key placeholder
-        run: touch MetaMeet/EmbeddedGeminiKey.txt
+        run: |
+          touch MetaMeet/EmbeddedGeminiKey.txt
+          echo '{}' > MetaMeet/EmbeddedHostConfig.json
+      - name: Host transfer tests
+        run: python3 -m unittest discover -s MetaMeet/Host/tests -v
       - name: Core tests
         run: swift test --package-path MetaMeet/Core
       - name: Generate project

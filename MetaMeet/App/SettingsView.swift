@@ -5,7 +5,11 @@ struct SettingsView: View {
     @EnvironmentObject private var store: MeetingStore
     @EnvironmentObject private var meta: MetaConnection
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("transcriptionPace") private var transcriptionPace = "fast"
+    @AppStorage("transcriptionPace") private var transcriptionPace = "slow"
+    @AppStorage("hostSyncEnabled") private var hostSyncEnabled = false
+    @AppStorage("hostURL") private var hostURL = "https://100.126.27.18:8766"
+    @State private var hostToken = ""
+    @ObservedObject private var hostSync = HostSync.shared
     @AppStorage("viewMode") private var viewMode = "korean"
     @AppStorage("translationFontSize") private var fontSize = 32.0
     @AppStorage("keepScreenAwake") private var keepAwake = true
@@ -35,6 +39,24 @@ struct SettingsView: View {
                     Text("신호는 100밀리초마다 전송됩니다.").font(.system(size: CGFloat(fontSize))).padding(.vertical, 12)
                     Toggle("녹음 중 화면 켜 두기", isOn: $keepAwake)
                 } header: { Text("화면") } footer: { Text("한국어 크게 보기에서도 중국어 원문은 저장됩니다. 내보내기에는 원문과 번역이 모두 포함됩니다.") }
+                Section {
+                    Toggle("Tailscale 원음 자동 백업", isOn: $hostSyncEnabled)
+                        .onChange(of: hostSyncEnabled) { _, _ in hostSync.retry() }
+                    TextField("호스트 주소", text: $hostURL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("호스트 연결 키", text: $hostToken).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("연결 키 저장 · 백업 재시도") {
+                        do {
+                            guard HostDestination.validate(hostURL) != nil else { throw NSError(domain: "Host", code: 1, userInfo: [NSLocalizedDescriptionKey: "Tailscale 주소를 확인해 주세요."]) }
+                            if !hostToken.isEmpty { try Keychain.saveHostToken(hostToken); hostToken = "" }
+                            hostSync.retry()
+                        } catch { store.error = error.localizedDescription }
+                    }
+                    Button("호스트에서 한국어 번역 사용") { Task { await hostSync.configureTranslation() } }
+                    Text("이 버튼을 누르면 앱의 Gemini 키를 지정된 호스트에 암호화 연결로 저장합니다. 사후 번역에는 텍스트만 Google로 전송합니다.").font(.caption).foregroundStyle(.secondary)
+                    Text(hostSync.status).font(.caption)
+                } header: { Text("호스트 백업") } footer: {
+                    Text("Tailscale 연결 중 원음을 약 1분씩 묶어 전송합니다. 끊기면 보관 후 재시도하며 폰 원본은 삭제하지 않습니다. 앱을 강제 종료한 경우 다시 열어 주세요.")
+                }
                 Section("안경 · 마이크") {
                     Text(meta.status).font(.footnote)
                     Text(meta.permissionStatus).font(.footnote)
