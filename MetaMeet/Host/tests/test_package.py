@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
 import ssl
+import sys
 import tempfile
 import unittest
 import zipfile
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from package_personal import package
 
 class PackagingTests(unittest.TestCase):
