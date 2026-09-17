@@ -186,7 +186,9 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 1 <= length <= 512: raise ValueError('length')
                 key = self.rfile.read(length).decode('ascii').strip()
-                if not re.fullmatch(r'[A-Za-z0-9_-]{20,256}', key): raise ValueError('key')
+                # Provider keys are opaque: punctuation is valid, but HTTP controls are not.
+                if not 20 <= len(key) <= 512 or any(not 33 <= ord(c) <= 126 for c in key):
+                    raise ValueError('key')
                 target = Path(self.server.key_file)
                 with self.server.store.lock:
                     temp = target.with_suffix('.tmp')
@@ -194,7 +196,13 @@ class Handler(BaseHTTPRequestHandler):
                     with os.fdopen(fd, 'w') as f: f.write(key); f.flush(); os.fsync(f.fileno())
                     os.replace(temp, target)
                 self.reply(200, {'configured': True})
-            except (ValueError, UnicodeError): self.reply(400, {'error': 'invalid key'})
+            except (ValueError, UnicodeError):
+                raw_length = self.headers.get('Content-Length', '')
+                length_hint = int(raw_length) if raw_length.isdecimal() and len(raw_length) < 8 else None
+                print(json.dumps({'event': 'translation_key_rejected',
+                                  'content_length': length_hint,
+                                  'chunked': self.headers.get('Transfer-Encoding', '').lower() == 'chunked'}), flush=True)
+                self.reply(400, {'error': 'invalid key'})
             except OSError: self.reply(503, {'error': 'storage unavailable'})
             return
         if not re.fullmatch(r'/v1/batches/[0-9a-f]{64}', self.path):

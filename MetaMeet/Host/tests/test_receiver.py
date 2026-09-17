@@ -74,12 +74,18 @@ class ReceiverTests(unittest.TestCase):
         server = Server(('127.0.0.1', 0), self.store, 'test-token', str(target))
         t = threading.Thread(target=server.serve_forever, daemon=True); t.start()
         try:
-            value = b'fake-provider-key-for-unit-test-only'
+            value = b'opaque.provider/key+with=punctuation-test-only'
             url = f'http://127.0.0.1:{server.server_port}/v1/translation-key'
             req = urllib.request.Request(url, data=value, method='PUT', headers={'Authorization': 'Bearer test-token'})
             with urllib.request.urlopen(req) as response: self.assertNotIn(value, response.read())
             self.assertEqual(target.read_bytes(), value)
             self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            for invalid in [b'too-short', b'provider-key-with embedded-space',
+                            b'provider-key-with\r\nHeader: injected', b'x' * 513]:
+                bad = urllib.request.Request(url, data=invalid, method='PUT', headers={'Authorization': 'Bearer test-token'})
+                with self.assertRaises(urllib.error.HTTPError) as e: urllib.request.urlopen(bad)
+                self.assertEqual(e.exception.code, 400)
+                self.assertEqual(target.read_bytes(), value)
         finally: server.shutdown(); server.server_close(); t.join()
     def test_http_auth_and_checksum_acknowledgment(self):
         server = Server(('127.0.0.1', 0), self.store, 'test-token')
