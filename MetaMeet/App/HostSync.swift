@@ -268,7 +268,8 @@ final class HostTLSDelegate: NSObject, URLSessionTaskDelegate {
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
     static func validate(_ challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        // No ATS exceptions. Validate TLS hostname, validity period and our pinned trust anchor.
+        // The host-only ATS exception permits this custom anchor, never unchecked trust.
+        // HTTPS is mandatory in HostDestination. Validate hostname and validity as well.
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let trust = challenge.protectionSpace.serverTrust,
               let url = Bundle.main.url(forResource: "HostCertificate", withExtension: "der"),

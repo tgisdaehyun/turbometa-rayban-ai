@@ -46,6 +46,15 @@ targets:
         CFBundleDisplayName: MetaMeet
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # A custom pinned trust anchor needs an ATS exception, scoped to this host only.
+        # HostDestination still rejects HTTP; HostTLSDelegate validates the pinned CA,
+        # certificate validity and hostname. Global ATS protection remains enabled.
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            '100.126.27.18':
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSExceptionMinimumTLSVersion: TLSv1.2
+              NSExceptionRequiresForwardSecrecy: true
         NSLocalNetworkUsageDescription: 'Tailscale로 연결된 개인 호스트에 회의 원음을 백업하고 연결 상태를 확인합니다.'
         NSMicrophoneUsageDescription: 'Meta 안경 또는 iPhone 마이크로 회의를 녹음하고 한국어로 번역합니다.'
         UIBackgroundModes: [audio, bluetooth-peripheral, external-accessory]

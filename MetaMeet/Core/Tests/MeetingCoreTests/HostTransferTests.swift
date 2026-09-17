@@ -4,7 +4,7 @@ final class HostTransferTests: XCTestCase {
     func testOnlyPrivateTailscaleDestinations() {
         XCTAssertNotNil(HostDestination.validate("https://100.126.27.18:8766"))
         XCTAssertNotNil(HostDestination.validate("https://host.tail123.ts.net"))
-        for value in ["http://example.com", "http://100.63.1.1", "http://100.128.1.1", "http://100.126.27.18.evil.com", "http://100.126.27.18/path", "http://user:pass@100.126.27.18", "http://100.126.27.18?token=x", "https://evilts.net", "file:///tmp/x"] {
+        for value in ["http://100.126.27.18:8766", "https://100.126.27.18?token=x", "https://user:pass@100.126.27.18", "https://100.126.27.18/path", "http://example.com", "http://100.63.1.1", "http://100.128.1.1", "http://100.126.27.18.evil.com", "http://100.126.27.18/path", "http://user:pass@100.126.27.18", "http://100.126.27.18?token=x", "https://evilts.net", "file:///tmp/x"] {
             XCTAssertNil(HostDestination.validate(value), value)
         }
     }
